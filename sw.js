@@ -1,6 +1,6 @@
 /* Life RPG — service worker: guarda la app para que abra sin internet y muestra las notificaciones push.
    Cambia VERSION en cada publicación para que los teléfonos bajen la versión nueva. */
-const VERSION = "life-rpg-v6";
+const VERSION = "life-rpg-v7";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./game.js", "./economy.js", "./storage.js", "./tesoro.js", "./boss.js", "./personaje.js", "./focus.js", "./planner.js", "./notify.js", "./nav.js", "./app.js",
   "./config.js", "./sync.js", "./vendor/supabase-2.117.2.js", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",

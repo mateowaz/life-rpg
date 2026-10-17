@@ -1,12 +1,12 @@
 /* ============ Datos de ejemplo ============ */
 function makeDemo(){
   const T=todayKey(), days={};
-  const pool={curso:["Módulo de JavaScript","Clase de inglés","Proyecto final"],fisico:["Entrenamiento de fuerza","Correr 5 km","Yoga"],cuidado:["Meditación","Dormir 8 horas","Skincare y estiramientos"],lectura:["El nombre del viento","Artículo de diseño","Hábitos atómicos"]};
+  const pool={curso:["Módulo de JavaScript","Clase de inglés","Proyecto final"],finanzas:["Presupuesto del mes","Curso de inversión","Revisar gastos"],fisico:["Entrenamiento de fuerza","Correr 5 km","Yoga"],cuidado:["Meditación","Dormir 8 horas","Skincare y estiramientos"],lectura:["El nombre del viento","Artículo de diseño","Hábitos atómicos"]};
   let seed=7;const rnd=()=>(seed=(seed*9301+49297)%233280)/233280;
   for(let i=21;i>=0;i--){
     const k=addDays(T,-i); if(i===9||i===15) continue;
     const acts=[];
-    for(const c of CATS){ if(i===0 && (c.id==="lectura")) continue; if(rnd()<.62||i<3){const min=[20,30,45,60][Math.floor(rnd()*4)],diff=1+Math.floor(rnd()*3);acts.push({id:uid(),cat:c.id,title:pool[c.id][Math.floor(rnd()*3)],min,diff,xp:actXP(min,diff),ts:Date.now()})}}
+    for(const c of CATS){ if(i===0 && (c.id==="lectura")) continue; if(rnd()<.62||i<3){const min=[20,30,45,60][Math.floor(rnd()*4)],diff=1+Math.floor(rnd()*3);acts.push({id:uid(),cat:c.id,title:pool[c.id][Math.floor(rnd()*3)],min,diff,xp:actXP(min,diff,c.id),ts:Date.now()})}}
     if(acts.length) days[k]={activities:acts};
   }
   return days;
@@ -17,7 +17,7 @@ const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:""
   eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null,
   plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week"};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
-function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity),note:r.note||"",ts:Date.parse(r.created_at)||0}}
+function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity,r.category),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
   const days={};
   for(const r of state.rows.values()){ if(r.deleted_at) continue; (days[r.date]||(days[r.date]={activities:[]})).activities.push(rowToAct(r)) }
@@ -203,7 +203,7 @@ function vHoy(s){
   ${isT?planTodayPanel():""}
   <div class="grid2"><section class="panel"><div class="panel-h"><h2>${isT?"Actividades realizadas":"Registro del día"}</h2></div>${dayList(k,s)}</section>
   <section class="panel"><div class="panel-h"><h2>Categorías del día</h2></div><div class="hbars">${CATS.map(c=>{const acts=(dataDays()[k]?.activities||[]).filter(a=>a.cat===c.id);const xp=acts.reduce((t,a)=>t+a.xp,0);return `<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${Math.min(xp/150,1)*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${xp?`+${xp} XP`:"—"}</span></div>`}).join("")}</div>
-  <p style="color:var(--muted);font-size:13px;margin:16px 0 0">Completa las 4 categorías en un día para ganar <b style="color:var(--gold)">+${FULL_DAY_BONUS} XP</b> de bonus.</p></section></div>`;
+  <p style="color:var(--muted);font-size:13px;margin:16px 0 0">Completa 4 categorías distintas en un día para ganar <b style="color:var(--gold)">+${FULL_DAY_BONUS} XP</b> de bonus.</p></section></div>`;
 }
 
 function vHistorial(s){
@@ -263,7 +263,8 @@ function vPerfil(s){
   <table class="rules"><tr><th>Regla</th><th>XP</th></tr>
   <tr><td>Cada actividad</td><td class="num">(10 + minutos) × intensidad</td></tr>
   <tr><td>Intensidad</td><td class="num">Ligera ×1 · Normal ×1,5 · Intensa ×2</td></tr>
-  <tr><td>Día completo (las 4 categorías)</td><td class="num">+${FULL_DAY_BONUS}</td></tr>
+  <tr><td>Finanzas</td><td class="num">XP final × 1,25 (redondeado)</td></tr>
+  <tr><td>Día completo (4 categorías distintas)</td><td class="num">+${FULL_DAY_BONUS}</td></tr>
   <tr><td>Nivel global siguiente</td><td class="num">120 XP, +40 por nivel</td></tr>
   <tr><td>Nivel de categoría siguiente</td><td class="num">60 XP, +20 por nivel</td></tr>
   <tr><td>Racha</td><td>Días seguidos con al menos 1 actividad</td></tr></table>
@@ -294,11 +295,11 @@ function openEdit(id){
 function renderModal(){renderModalInner();ovSync()}
 function renderModalInner(){
   const root=document.getElementById("modalRoot"); if(!form){root.innerHTML=dlg?dlgHTML():"";return}
-  const xp=actXP(form.min,form.diff);
+  const xp=actXP(form.min,form.diff,form.cat);
   root.innerHTML=`<div class="scrim" id="scrim"><form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="mTitle">
   <div><div class="eyebrow">${form.fromFocus?"Sesión de enfoque · ":""}${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">${form.editId?"Editar actividad":"Nueva actividad"}</h2></div>
   ${form.fromFocus&&form.fromFocus.overlap>0?`<div class="demo"><span>Esta sesión se superpone ${form.fromFocus.overlap} min con otra ya guardada: esos minutos no se cuentan dos veces.</span></div>`:""}
-  <div class="field"><label>Categoría</label><div class="seg">${CATS.map(c=>`<button type="button" class="c-${c.id}" data-fcat="${c.id}" aria-pressed="${form.cat===c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div><small style="color:var(--muted);font-size:12px">${CAT[form.cat].hint}</small></div>
+  <div class="field"><label>Categoría</label><div class="seg cat5">${CATS.map(c=>`<button type="button" class="c-${c.id}" data-fcat="${c.id}" aria-pressed="${form.cat===c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div><small style="color:var(--muted);font-size:12px">${CAT[form.cat].hint}</small></div>
   <div class="field"><label for="fTitle">¿Qué hiciste?</label><input class="inp" id="fTitle" maxlength="80" placeholder="Ej.: Clase 4 del curso de React" value="${esc(form.title)}"></div>
   <div class="row2"><div class="field"><label for="fMin">Minutos</label><input class="inp num" id="fMin" type="number" min="1" max="240" step="1" value="${form.min}"></div>
   <div class="field"><label for="fDate">Fecha</label><input class="inp" id="fDate" type="date" max="${todayKey()}" value="${form.date}"></div></div>
@@ -311,7 +312,7 @@ function renderModalInner(){
 function readForm(){const g=id=>document.getElementById(id);if(!g("fTitle"))return;form.title=g("fTitle").value;form.min=g("fMin").value;form.date=g("fDate").value||todayKey();form.note=g("fNote").value}
 
 document.addEventListener("input",e=>{
-  if(form&&e.target.closest("#addForm")){readForm();const x=document.getElementById("fXP");if(x)x.textContent=`+${actXP(form.min,form.diff)} XP`}
+  if(form&&e.target.closest("#addForm")){readForm();const x=document.getElementById("fXP");if(x)x.textContent=`+${actXP(form.min,form.diff,form.cat)} XP`}
   if(e.target.id==="pName"||e.target.id==="pMotto"){state.profile.name=document.getElementById("pName").value.trim();state.profile.motto=document.getElementById("pMotto").value.trim();saveProfile()}
 });
 document.addEventListener("submit",e=>{
@@ -320,7 +321,7 @@ document.addEventListener("submit",e=>{
   if(!form.title.trim()){form.err="Escribe qué actividad hiciste.";renderModal();document.getElementById("fTitle").focus();return}
   if(!(min>=1&&min<=240)){form.err="Los minutos tienen que estar entre 1 y 240.";renderModal();return}
   if(form.date>todayKey()){form.err="No puedes registrar días futuros.";renderModal();return}
-  const a={cat:form.cat,title:form.title.trim(),min,diff:form.diff,xp:actXP(min,form.diff),note:form.note.trim()};
+  const a={cat:form.cat,title:form.title.trim(),min,diff:form.diff,xp:actXP(min,form.diff,form.cat),note:form.note.trim()};
   const k=form.date, editId=form.editId, useId=form.useId; form=null; renderModal();
   if(editId) editActivity(editId,k,a); else addActivity(k,a,useId);
 });

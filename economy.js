@@ -55,7 +55,7 @@ function derivedGold(days) {
       cats.add(a.cat);
       out.push({ id: a.id, amount: goldForXP(a.xp), source: "activity", source_id: a.id, description: String(a.title).slice(0, 80), created_at: new Date(a.ts || Date.parse(k)).toISOString() });
     }
-    if (cats.size === 4) out.push({ id: Store.toUUID("full_day:" + k), amount: GOLD_FULL_DAY, source: "full_day", source_id: k, description: "Día completo", created_at: k + "T12:00:00.000Z" });
+    if (cats.size >= FULL_DAY_CATS) out.push({ id: Store.toUUID("full_day:" + k), amount: GOLD_FULL_DAY, source: "full_day", source_id: k, description: "Día completo", created_at: k + "T12:00:00.000Z" });
     run = prev && addDays(prev, 1) === k ? run + 1 : 1; prev = k;
     if (run % STREAK_STEP === 0) out.push({ id: Store.toUUID("streak:" + k), amount: GOLD_STREAK, source: "streak", source_id: k, description: `Racha de ${run} días`, created_at: k + "T12:00:00.000Z" });
   }
@@ -117,7 +117,7 @@ function goalProgress(g, days) {
     const acts = days[k].activities, mine = g.category ? acts.filter((a) => a.cat === g.category) : acts;
     switch (g.goal_type) {
       case "activities": case "cat_activities": v += mine.length; break;
-      case "xp": v += acts.reduce((t, a) => t + a.xp, 0) + (new Set(acts.map((a) => a.cat)).size === 4 ? FULL_DAY_BONUS : 0); break;
+      case "xp": v += acts.reduce((t, a) => t + a.xp, 0) + (isFullDay(acts) ? FULL_DAY_BONUS : 0); break;
       case "cat_xp": v += mine.reduce((t, a) => t + a.xp, 0); break;
       case "minutes": case "cat_minutes": v += mine.reduce((t, a) => t + a.min, 0); break;
       case "streak": run = prev && addDays(prev, 1) === k ? run + 1 : 1; prev = k; best = Math.max(best, run); break;

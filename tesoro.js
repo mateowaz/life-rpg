@@ -158,7 +158,7 @@ function goalForm() {
   <div><div class="eyebrow">${cap(monthName(f.y, f.m))}</div><h2 id="gH">${dlg.id ? "Editar objetivo" : "Nuevo objetivo"}</h2></div>
   <div class="field"><label>Atajos</label><div class="presets">${GOAL_PRESETS.map((p) => `<button type="button" class="chip" data-gpreset="${p.id}">${p.label}</button>`).join("")}</div></div>
   <div class="field"><label for="gType">Tipo</label><select class="inp" id="gType">${Object.entries(GOAL_TYPES).map(([k, v]) => `<option value="${k}" ${k === f.goal_type ? "selected" : ""}>${v.name}</option>`).join("")}</select></div>
-  ${T.cat ? `<div class="field"><label>Categoría</label><div class="seg">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-gcat="${c.id}" aria-pressed="${f.category === c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div></div>` : ""}
+  ${T.cat ? `<div class="field"><label>Categoría</label><div class="seg cat5">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-gcat="${c.id}" aria-pressed="${f.category === c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div></div>` : ""}
   <div class="row2"><div class="field"><label for="gTarget">Meta${T.unit ? ` (${T.unit})` : ""}</label><input class="inp num" id="gTarget" type="number" min="1" max="1000000" step="1" value="${esc(f.target)}"></div>
   <div class="field"><label for="gReward">Recompensa (Oro)</label><input class="inp num" id="gReward" type="number" min="0" max="10000" step="1" value="${esc(f.reward)}"></div></div>
   <div class="field"><label for="gTitle">Título</label><input class="inp" id="gTitle" maxlength="60" placeholder="Ej.: Terminar el módulo 3" value="${esc(f.title)}"></div>
