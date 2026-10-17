@@ -1,8 +1,8 @@
 /* Life RPG — service worker: guarda la app para que abra sin internet.
    Cambia VERSION en cada publicación para que los teléfonos bajen la versión nueva. */
-const VERSION = "life-rpg-v4";
+const VERSION = "life-rpg-v5";
 const SHELL = [
-  "./", "./index.html", "./styles.css", "./game.js", "./economy.js", "./storage.js", "./tesoro.js", "./boss.js", "./personaje.js", "./app.js",
+  "./", "./index.html", "./styles.css", "./game.js", "./economy.js", "./storage.js", "./tesoro.js", "./boss.js", "./personaje.js", "./focus.js", "./planner.js", "./app.js",
   "./config.js", "./sync.js", "./vendor/supabase-2.117.2.js", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
   "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png"
 ];

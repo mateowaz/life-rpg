@@ -199,6 +199,9 @@ function badgesDlg(s) {
 }
 /** Ventanas que agregan boss.js y este archivo (las dibuja dlgHTML de tesoro.js) */
 function extraDlg(d) {
+  const pf = planDlg(d) || focusDlg(d);          // Planificador y Temporizador (planner.js, focus.js)
+  if (pf) return pf;
+  if (dlg !== d) return "";                      // la ventana se cerró sola (la planificación o la sesión ya no existe)
   if (d.type === "bossForm") return bossForm();
   if (d.type === "bossDown" || d.type === "bossClaimed") return bossDlgHTML(d);
   const s = compute();
