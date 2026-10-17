@@ -5,4 +5,7 @@
 window.LIFE_RPG_CONFIG = {
   supabaseUrl: "https://hpxphljtiidtlvpdzwhd.supabase.co",
   supabaseKey: "sb_publishable_KT1LGhEnDeJgtm9yvcjonw_DE7kJ70a",
+  // Clave VAPID PÚBLICA para las notificaciones push (empieza con "B…"). Es pública a propósito.
+  // La clave VAPID PRIVADA nunca va aquí: vive solo como secreto de la Edge Function send-push.
+  vapidPublicKey: "",
 };

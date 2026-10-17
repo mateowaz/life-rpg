@@ -117,7 +117,7 @@ function goalCard({ g, v, st }) {
   const tools = st === "claimed" || st === "claiming" || state.demo ? "" : confirm
     ? `<span class="confirm">¿Eliminar? <button class="btn sm danger" data-goal-del="${g.id}">Sí</button><button class="btn sm ghost" data-goal-nodel>No</button></span>`
     : `<button class="icon-btn edit" data-goal-edit="${g.id}" aria-label="Editar objetivo">${ico("edit")}</button><button class="icon-btn" data-goal-askdel="${g.id}" aria-label="Eliminar objetivo">${ico("trash")}</button>`;
-  return `<section class="goal-card ${cat ? "c-" + g.category : ""} ${st}">
+  return `<section class="goal-card ${cat ? "c-" + g.category : ""} ${st}" data-gid="${g.id}">
     <div class="goal-top">${cat ? `<span class="cat-tag">${ico(g.category)}${cat.name}</span>` : `<span class="cat-tag plain">${GOAL_TYPES[g.goal_type].name}</span>`}<span class="act-r">${tools}</span></div>
     <b class="goal-name">${esc(g.title)}</b>${g.description ? `<span class="goal-desc">${esc(g.description)}</span>` : ""}
     <div class="goal-h"><span class="num">${goalNumbers(g, v)}</span><span class="num">${Math.floor(pct * 100)} %</span></div>

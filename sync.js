@@ -29,13 +29,16 @@ const Sync = (() => {
     ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
     ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
     ["bosses", "monthly_bosses", "id,year,month,name,description,boss_type,category,target_hp,manual_progress,coin_reward,title_reward,theme,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
-    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,reminder_minutes,created_at,updated_at,deleted_at,synced_at", "id"],
     ["focus", "focus_sessions", "id,planned_activity_id,device_id,title,category,mode,status,started_at,segment_started_at,segments,focus_seconds,pomodoro,ended_at,created_at,updated_at,deleted_at,synced_at", "id"],
   ];
 
   // Tablas de la versión 5: si todavía no se ejecutó 004 en Supabase, se saltean sin frenar el resto
   const OPTIONAL = new Set(["planned_activities", "focus_sessions"]);
   const missing = (e) => e && (e.code === "PGRST205" || e.code === "42P01" || /could not find the table|does not exist/i.test(String(e.message || "")));
+  // Columna de la versión 6 (planned_activities.reminder_minutes): si todavía no se ejecutó 005, se sube y se baja sin ella
+  const noColumn = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /reminder_minutes/.test(String(e.message || ""));
+  let noRem = false;
 
   let sb = null, session = null, linked = null;
   let status = "local"; // local | confirm | syncing | synced | offline | error
@@ -127,7 +130,7 @@ const Sync = (() => {
 
       // 2. Subir
       const pend = await Store.pendingList();
-      const actPend = pend.filter((p) => p.id !== "profile" && !p.id.includes(":"));
+      const actPend = pend.filter((p) => p.id !== "profile" && p.id !== "nprefs" && !p.id.includes(":"));
       for (let i = 0; i < actPend.length; i += CHUNK) {
         const part = actPend.slice(i, i + CHUNK);
         const rows = await Store.getRows(part.map((p) => p.id));
@@ -174,8 +177,13 @@ const Sync = (() => {
           let rows = await Store.getT(t, part.map((p) => p.id.slice(P.length)));
           if (t === "coins") rows = rows.filter((r) => Store.DERIVED.includes(r.source)); // el resto lo escribe el servidor
           if (t === "bosses") rows = rows.map(({ claimed_at, ...r }) => r);                // claimed_at solo lo escribe claim_boss
+          if (t === "plans" && noRem) rows = rows.map(({ reminder_minutes, ...r }) => r);
           if (rows.length) {
-            const { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
+            let { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
+            if (error && t === "plans" && noColumn(error)) {
+              noRem = true; await Store.setMeta("noRemCol", true);
+              ({ error } = await sb.from(table).upsert(rows.map(({ reminder_minutes, ...r }) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+            }
             if (error && OPTIONAL.has(table) && missing(error)) break;    // quedan pendientes hasta que exista la tabla
             if (error) throw error;
           }
@@ -210,7 +218,8 @@ const Sync = (() => {
       }
 
       // 6. Bajar las tablas nuevas
-      for (const [t, table, cols, second] of PULL) {
+      for (const [t, table, cols0, second] of PULL) {
+        let cols = t === "plans" && noRem ? cols0.replace("reminder_minutes,", "") : cols0;
         const ck = "cursor:" + table;
         const cur = (await Store.getMeta(ck)) || "1970-01-01T00:00:00.000Z";
         const sinceT = new Date(Date.parse(cur) - 120000).toISOString();
@@ -219,6 +228,7 @@ const Sync = (() => {
           const { data, error } = await sb.from(table).select(cols).gt("synced_at", sinceT)
             .order("synced_at", { ascending: true }).order(second, { ascending: true }).range(off, off + PAGE - 1);
           if (error && OPTIONAL.has(table) && missing(error)) { max = cur; break; }
+          if (error && t === "plans" && noColumn(error) && !noRem) { noRem = true; await Store.setMeta("noRemCol", true); cols = cols0.replace("reminder_minutes,", ""); continue; }
           if (error) throw error;
           if (data.length) {
             // compras y cofres: siempre manda el servidor
@@ -230,6 +240,27 @@ const Sync = (() => {
         }
         await Store.setMeta(ck, max);
       }
+      // La columna del recordatorio ya existe (se ejecutó 005): se suben los recordatorios guardados mientras tanto
+      if (noRem && (await Store.getMeta("noRemCol"))) {
+        const { error } = await sb.from("planned_activities").select("reminder_minutes").limit(1);
+        if (!error) {
+          noRem = false; await Store.setMeta("noRemCol", false);
+          for (const r of (await Store.all("plans")).filter((r) => r.reminder_minutes !== null)) await Store.markPending("plan:" + r.id, r.updated_at);
+          again = true;
+        }
+      }
+
+      // 8. Notificaciones (versión 6): preferencias de la cuenta y la cola de llamadas. Sin 005 en el servidor, se saltean.
+      try {
+        const np = (await Store.pendingList()).find((p) => p.id === "nprefs"), row = window.Notify && Notify.prefsRow();
+        if (np && row) {
+          const { error } = await sb.from("notification_preferences").upsert({ ...row, user_id: uid() }, { onConflict: "user_id", defaultToNull: false });
+          if (!error) await Store.clearPending([np]); else if (!missing(error)) throw error;
+        }
+        const { data: rp, error: ep } = await sb.from("notification_preferences").select("enabled,plan_reminders,overdue,focus,goals,boss,chests,default_reminder,quiet_enabled,quiet_start,quiet_end,timezone,updated_at").maybeSingle();
+        if (!ep && rp && window.Notify && (await Notify.applyRemotePrefs(rp))) changedLocal = true;
+        if (window.Notify) await Notify.flush(sb);
+      } catch (e) { /* las notificaciones nunca frenan la sincronización */ }
 
       // 7. Quitar las operaciones que el servidor ya resolvió y ya bajaron
       {
@@ -272,6 +303,7 @@ const Sync = (() => {
     enabled,
     async init() {
       offset = +(await Store.getMeta("clockOffset")) || 0;
+      noRem = !!(await Store.getMeta("noRemCol"));
       await refreshCount();
       if (!enabled) { emit(); return; }
       sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, {
@@ -306,14 +338,18 @@ const Sync = (() => {
     },
     /** Cierra sesión y borra los datos de este dispositivo (siguen en la cuenta) */
     async signOut() {
+      if (sb && session && window.Notify) { try { await Notify.beforeSignOut(sb); } catch (e) {} }
       stopRealtime(); clearTimeout(retryTimer); clearTimeout(debounce);
       try { await sb.auth.signOut({ scope: "local" }); } catch (e) {}
       session = null; linked = null; status = "local";
       await Store.clearAll(); await refreshCount();
+      if (window.Notify) Notify.reset();
       if (window.App) await App.reload();
       emit();
     },
     run, changed,
+    /** Cliente de Supabase con sesión, para las llamadas directas de notificaciones (null sin sesión) */
+    client: () => (ready() && navigator.onLine ? sb : null),
     /** Hora actual corregida con la del servidor */
     now: () => new Date(Date.now() + offset).toISOString(),
     onChange: (f) => listeners.add(f),

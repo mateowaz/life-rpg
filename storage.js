@@ -15,11 +15,12 @@
      bosses      Boss de cada mes (versión 4)
      plans       actividades planificadas (versión 5). "Completada" no se guarda: es la actividad con el mismo id
      focus       sesiones de enfoque (versión 5), con sus tramos de tiempo
-     ops         compras, reclamos y cofres que esperan la confirmación del servidor */
+     ops         compras, reclamos y cofres que esperan la confirmación del servidor
+     nout        llamadas de notificaciones que esperan conexión (versión 6). Las preferencias van en meta "nprefs" */
 const Store = (() => {
-  const NAME = "liferpg", VERSION = 5;
+  const NAME = "liferpg", VERSION = 6;
   let db = null;
-  const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map() }; // si el navegador no deja guardar
+  const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map(), nout: new Map() }; // si el navegador no deja guardar
   /* Tablas nuevas (versión 3). prefix = cómo se anotan en la cola de pendientes; sin prefix nunca se suben
      (las compras y los cofres solo los escribe el servidor). */
   const T = {
@@ -105,6 +106,7 @@ const Store = (() => {
       case "plans": return { id: r.id, date: String(r.date).slice(0, 10), time: r.time ? String(r.time).slice(0, 5) : null, title: String(r.title || "").slice(0, 80),
         category: r.category, planned_minutes: Math.round(+r.planned_minutes), intensity: +r.intensity, note: String(r.note || "").slice(0, 120),
         status: ["planned", "skipped", "cancelled"].includes(r.status) ? r.status : "planned", moved_from: r.moved_from ? String(r.moved_from).slice(0, 10) : null,
+        reminder_minutes: r.reminder_minutes === null || r.reminder_minutes === undefined || r.reminder_minutes === "" || !(+r.reminder_minutes >= 0 && +r.reminder_minutes <= 1440) ? null : Math.round(+r.reminder_minutes),   // versión 6
         created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
       case "focus": return { id: r.id, planned_activity_id: r.planned_activity_id || null, device_id: String(r.device_id || ""), title: String(r.title || "").slice(0, 80),
         category: r.category, mode: r.mode === "pomodoro" ? "pomodoro" : "free", status: r.status, started_at: iso(r.started_at), segment_started_at: isoN(r.segment_started_at),
@@ -127,6 +129,7 @@ const Store = (() => {
         // Versiones 3, 4 y 5: solo se agregan almacenes nuevos; nada de lo anterior se toca
         for (const t in T) if (!d.objectStoreNames.contains(t)) d.createObjectStore(t, { keyPath: T[t].key });
         if (!d.objectStoreNames.contains("ops")) d.createObjectStore("ops", { keyPath: "key" });
+        if (!d.objectStoreNames.contains("nout")) d.createObjectStore("nout", { keyPath: "key" });   // versión 6
         // Versión 1 guardaba un registro por día: se convierte a una fila por actividad.
         // El almacén viejo "days" se conserva sin tocar, como respaldo.
         if (e.oldVersion === 1 && d.objectStoreNames.contains("days")) {
@@ -278,6 +281,7 @@ const Store = (() => {
       for (const r of await this.all("plans")) entries.push({ id: "plan:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("focus")) entries.push({ id: "focus:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("coins")) if (DERIVED.includes(r.source)) entries.push({ id: "coin:" + r.id, updated_at: r.updated_at });
+      const np = await getMeta("nprefs"); if (np && np.updated_at) entries.push({ id: "nprefs", updated_at: np.updated_at });
       if (!db) { for (const e of entries) mem.pending.set(e.id, e); return; }
       await tx(["pending"], "readwrite", (t) => { for (const e of entries) t.objectStore("pending").put(e); });
     },
@@ -286,8 +290,8 @@ const Store = (() => {
 
     /** Borra los datos de este dispositivo (al cerrar sesión). Conserva el id del dispositivo. */
     async clearAll() {
-      const stores = ["activities", "pending", "meta", "ops", ...Object.keys(T)];
-      if (!db) { mem.rows.clear(); mem.pending.clear(); mem.ops.clear(); for (const t in T) mem[t].clear(); const d = mem.meta.get("device"); mem.meta.clear(); mem.meta.set("device", d); return; }
+      const stores = ["activities", "pending", "meta", "ops", "nout", ...Object.keys(T)];
+      if (!db) { mem.rows.clear(); mem.pending.clear(); mem.ops.clear(); mem.nout.clear(); for (const t in T) mem[t].clear(); const d = mem.meta.get("device"); mem.meta.clear(); mem.meta.set("device", d); return; }
       const device = await getMeta("device");
       await tx(stores, "readwrite", (t) => {
         for (const st of stores) t.objectStore(st).clear();
@@ -325,10 +329,14 @@ const Store = (() => {
       if (!remote.length) return 0;
       const K = T[t].key, P = T[t].prefix;
       const sticky = t === "goals" || t === "bosses";
-      const merge = (l, r) => (sticky && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
+      let merge = (l, r) => (sticky && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
       const ended = (x) => x && (x.status === "finished" || x.status === "discarded");
       const wins = (l, r) => !l || force || (t === "focus" && ended(l) && !ended(r) ? false : time(r.updated_at) > time(l.updated_at) || (sticky && r.claimed_at && !l.claimed_at));
+      // Planificaciones bajadas sin la columna reminder_minutes (servidor sin 005): se conserva el recordatorio local
+      const noRem = t === "plans" ? new Set(remote.filter((r) => !("reminder_minutes" in r)).map((r) => r.id)) : null;
       const rows = remote.map((r) => cleanT(t, r));
+      const merge0 = merge;
+      merge = (l, r) => { const x = merge0(l, r); return noRem && l && noRem.has(r.id) ? { ...x, reminder_minutes: l.reminder_minutes ?? null } : x; };
       if (!db) {
         let n = 0;
         for (const r of rows) { const l = mem[t].get(r[K]); if (wins(l, r)) { mem[t].set(r[K], merge(l, r)); if (P) mem.pending.delete(P + r.id); n++; } }
@@ -357,6 +365,25 @@ const Store = (() => {
       op = { seq: Date.now() + Math.random(), ...op };
       if (!db) { mem.ops.set(op.key, op); return; }
       await tx(["ops"], "readwrite", (x) => { x.objectStore("ops").put(op); });
+    },
+    /** Marca algo como pendiente de subir (preferencias de notificaciones: "nprefs") */
+    async markPending(id, updated_at) {
+      if (!db) { mem.pending.set(id, { id, updated_at }); return; }
+      await tx(["pending"], "readwrite", (x) => { x.objectStore("pending").put({ id, updated_at }); });
+    },
+    /* ---- Cola de notificaciones (versión 6) ---- */
+    async outbox() {
+      const list = db ? await tx(["nout"], "readonly", (x, set) => req(x.objectStore("nout").getAll()).then(set)) : [...mem.nout.values()];
+      return list.sort((a, b) => a.at - b.at);
+    },
+    async putOut(op) {
+      if (!db) { mem.nout.set(op.key, op); return; }
+      await tx(["nout"], "readwrite", (x) => { x.objectStore("nout").put(op); });
+    },
+    async delOut(keys) {
+      if (!keys.length) return;
+      if (!db) { for (const k of keys) mem.nout.delete(k); return; }
+      await tx(["nout"], "readwrite", (x) => { for (const k of keys) x.objectStore("nout").delete(k); });
     },
     async delOps(keys) {
       if (!keys.length) return;
