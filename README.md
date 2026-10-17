@@ -11,17 +11,21 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `boss.js`: Boss mensual (reglas de daño y estado, pantalla Boss, panel del Dashboard, reclamo y respaldo).
 - `planner.js`: Planificador (Calendario, Agenda, panel de Hoy, Próximas misiones, completar, reprogramar, omitir, historial y estadísticas de planificación).
 - `focus.js`: Temporizador de enfoque (sesión libre y Pomodoro, pausa, barra de sesión activa, guardado como actividad).
+- `nav.js`: navegación. En celular: barra inferior (Inicio, Hoy, Plan, Boss, Más) y hoja "Más". Botón Atrás con historial (`pushState`/`popstate`) y enlaces internos de las notificaciones.
+- `notify.js`: notificaciones en la app (permiso, activar por dispositivo, preferencias, lista de dispositivos, número en el ícono).
 - `personaje.js`: Perfil avanzado (ficha, avatar, títulos, insignias destacadas, estadísticas de vida y récords).
 - `storage.js`: copia local en IndexedDB (una fila por actividad + cola de pendientes). La app solo lee y escribe aquí.
 - `sync.js`: inicio de sesión (email y contraseña) y sincronización con Supabase: sube pendientes, baja cambios, Realtime y reintentos.
-- `config.js`: URL del proyecto y **Publishable Key**. Nunca la service_role ni una secret key.
+- `config.js`: URL del proyecto, **Publishable Key** y clave VAPID **pública**. Nunca la service_role, una secret key ni la clave VAPID privada.
 - `app.js`: vistas, formulario (agregar y editar), cuenta, respaldo e instalación.
-- `sw.js`: modo offline. **Sube `VERSION` en cada publicación.**
+- `sw.js`: modo offline y mostrar notificaciones push. **Sube `VERSION` en cada publicación.**
 - `vendor/supabase-2.117.2.js`: cliente de Supabase guardado en el repositorio para que funcione sin internet (licencia MIT).
 - `supabase/schema.sql`: tablas, reglas RLS y trigger de "gana la versión más reciente".
 - `supabase/002_oro_tienda_objetivos_cofres.sql`: Oro, tienda, compras, objetivos y cofres. Se ejecuta una vez, después de `schema.sql`.
 - `supabase/003_boss_y_perfil.sql`: Bosses mensuales, `claim_boss` y columnas de avatar, título e insignias en `profiles`. Se ejecuta una vez, después de `002`.
 - `supabase/004_planificador_enfoque.sql`: tablas `planned_activities` y `focus_sessions` y el trigger `protect_focus`. Se ejecuta una vez, después de `003`. Hasta ejecutarlo, la app sigue sincronizando todo lo demás y guarda planificaciones y sesiones solo en el dispositivo.
+- `supabase/005_navegacion_notificaciones.sql`: recordatorio en `planned_activities`, dispositivos, preferencias, avisos y entregas por dispositivo, y las tareas de `pg_cron`. Se ejecuta una vez, después de `004`.
+- `supabase/functions/send-push/index.ts`: Edge Function que cifra y entrega los avisos (Web Push). Sus claves son secretos de la función.
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
 
 ## Sincronización
@@ -51,8 +55,18 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - El tiempo de enfoque no da XP. Al terminar se guarda como actividad (libre) o se usa para completar su planificación (sin sumar dos veces los minutos que se superponen).
 - En el servidor, `protect_focus` congela una sesión finalizada o descartada, recalcula `focus_seconds` desde los tramos y descarta tramos inválidos.
 
+## Navegación en celular
+- Barra inferior con Inicio, Hoy, Plan, Boss y Más. Más abre una hoja con Historial, Estadísticas, Objetivos, Tienda, Logros y Perfil. En computadora el menú lateral no cambia.
+- Atrás de Android: si hay una hoja o un diálogo abierto, lo cierra primero. Si no, vuelve a la pantalla anterior; desde Inicio sale de la app.
+
+## Notificaciones
+- Se activan en Perfil → Notificaciones, en cada dispositivo por separado. El navegador pide permiso solo al tocar "Permitir".
+- Un aviso se crea una sola vez por cuenta (`notification_events`) y se entrega por dispositivo (`notification_deliveries`): uno puede llegar y otro fallar, y un dispositivo vencido (404/410) se apaga solo sin tocar los demás. Nunca se manda dos veces al mismo dispositivo.
+- `pg_cron` revisa cada minuto qué avisos tocan y llama a la Edge Function `send-push`, que los cifra y entrega. La clave VAPID privada existe solo como secreto de esa función.
+- Horario silencioso: solo pasa Focus; al terminar llega lo pendiente (más de 3, un resumen).
+
 ## Publicar en GitHub Pages
 Rama `main`, carpeta `/` (Settings → Pages).
 
 ## Respaldo
-Perfil → Datos y respaldo. Exporta la versión 5 (actividades, perfil con avatar, Oro, tienda, compras, objetivos, cofres, Bosses, planificaciones y sesiones de enfoque) e importa respaldos de las versiones 1 a 5. Un respaldo nunca copia Oro ni `claimed_at`, nunca cierra un cofre abierto ni desreclama un objetivo o un Boss: lo que falta se confirma con el servidor.
+Perfil → Datos y respaldo. Exporta la versión 6 (actividades, perfil con avatar, Oro, tienda, compras, objetivos, cofres, Bosses, planificaciones con su recordatorio, sesiones de enfoque y preferencias de notificaciones) e importa respaldos de las versiones 1 a 6. Nunca incluye dispositivos, suscripciones ni claves; importar no activa notificaciones en ningún dispositivo. Un respaldo nunca copia Oro ni `claimed_at`, nunca cierra un cofre abierto ni desreclama un objetivo o un Boss: lo que falta se confirma con el servidor.

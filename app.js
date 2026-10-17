@@ -51,6 +51,8 @@ async function boot(){
   Sync.onChange(onSyncChange);
   Sync.onNotice(onSyncNotice);
   Sync.init().catch(()=>{});
+  navReady();
+  Notify.init();
 }
 const nowISO=()=>Sync.now();
 /** Guarda filas cambiadas: memoria → dispositivo → cola de sincronización */
@@ -118,7 +120,10 @@ function crest(pct){
 }
 function toast(html,cls=""){
   const t=document.createElement("div");t.className="toast "+cls;t.innerHTML=html;
-  document.getElementById("toasts").appendChild(t);setTimeout(()=>t.remove(),3800);
+  const box=document.getElementById("toasts");
+  // en celular, como máximo 3 a la vez: se va el más viejo
+  if(matchMedia("(max-width:820px)").matches) while(box.children.length>=3) box.firstElementChild.remove();
+  box.appendChild(t);setTimeout(()=>t.remove(),3800);
 }
 function actRow(k,a){
   const del = state.confirmDel===a.id
@@ -231,16 +236,17 @@ function vStats(s){
   const T=todayKey(); const N=30; const days=[...Array(N)].map((_,i)=>addDays(T,i-N+1));
   const per=days.map(k=>{const acts=dataDays()[k]?.activities||[];const o={};CATS.forEach(c=>o[c.id]=acts.filter(a=>a.cat===c.id).reduce((t,a)=>t+a.xp,0));o.bonus=s.perDay[k]?.full?FULL_DAY_BONUS:0;return o});
   const tot=per.map(o=>CATS.reduce((t,c)=>t+o[c.id],0)+o.bonus); const max=Math.max(100,...tot); const top=Math.ceil(max/100)*100;
-  const W=720,H=220,L=36,B=24,bw=(W-L-8)/N;
+  const narrow=matchMedia("(max-width:480px)").matches; // en celular: gráfico más angosto para que la letra se lea
+  const W=narrow?360:720,H=narrow?200:220,L=36,B=24,bw=(W-L-8)/N;
   let bars="";per.forEach((o,i)=>{let y=H-B;for(const c of [...CATS.map(c=>c.id),"bonus"]){const v=o[c];if(!v)continue;const h=v/top*(H-B-10);y-=h;bars+=`<rect x="${L+i*bw+2}" y="${y}" width="${bw-4}" height="${h}" rx="2" fill="${c==="bonus"?"var(--gold)":`var(--c-${c})`}"/>`}});
-  let grid="";for(let g=0;g<=4;g++){const v=top/4*g,y=H-B-v/top*(H-B-10);grid+=`<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L-6}" y="${y+4}" text-anchor="end">${v}</text>`}
-  const xl=[0,7,14,21,29].map(i=>`<text x="${L+i*bw+bw/2}" y="${H-6}" text-anchor="middle">${fmtShort(days[i])}</text>`).join("");
+  let grid="";const gn=narrow?2:4;for(let g=0;g<=gn;g++){const v=top/gn*g,y=H-B-v/top*(H-B-10);grid+=`<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L-6}" y="${y+4}" text-anchor="end">${v}</text>`}
+  const xl=(narrow?[0,14,29]:[0,7,14,21,29]).map(i=>`<text x="${L+i*bw+bw/2}" y="${H-6}" text-anchor="middle">${fmtShort(days[i])}</text>`).join("");
   const maxC=Math.max(1,...CATS.map(c=>s.catXP[c.id]));
   const wd=[0,0,0,0,0,0,0];for(const k in s.perDay){wd[(fromKey(k).getDay()+6)%7]+=s.perDay[k].xp}const maxW=Math.max(1,...wd);
   return header("Estadísticas","Tu progreso en números.",false)+`
   <div class="kpis"><div class="kpi"><b class="num">${nf(s.xp)}</b><span>XP total</span></div><div class="kpi"><b class="num">${nf(s.total)}</b><span>Actividades</span></div><div class="kpi"><b class="num">${nf(s.minutes/60)} h</b><span>Tiempo invertido</span></div><div class="kpi"><b class="num">${s.activeDays?nf(s.xp/s.activeDays):0}</b><span>XP por día activo</span></div></div>
   <section class="panel"><div class="panel-h"><h2>XP de los últimos 30 días</h2><div class="legend" style="margin:0">${CATS.map(c=>`<span><i style="background:var(--c-${c.id})"></i>${c.name}</span>`).join("")}<span><i style="background:var(--gold)"></i>Bonus</span></div></div>
-  <div style="overflow-x:auto"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="XP diaria de los últimos 30 días">${grid}${bars}${xl}</svg></div></section>
+  <div style="overflow-x:auto"><svg class="chart${narrow?" narrow":""}" viewBox="0 0 ${W} ${H}" role="img" aria-label="XP diaria de los últimos 30 días">${grid}${bars}${xl}</svg></div></section>
   <div class="grid2"><section class="panel"><div class="panel-h"><h2>XP por categoría</h2></div><div class="hbars">${CATS.map(c=>`<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${s.catXP[c.id]/maxC*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${nf(s.catXP[c.id])} XP</span></div>`).join("")}</div>
   <div class="hbars" style="margin-top:18px">${CATS.map(c=>`<div class="hbar"><span style="color:var(--muted)">${c.name}</span><span class="num" style="color:var(--muted);font-size:12.5px">${s.cnt[c.id]} actividades · ${nf(s.catMin[c.id]/60)} h</span><span class="v num">Nv ${s.catLv[c.id]}</span></div>`).join("")}</div></section>
   <section class="panel"><div class="panel-h"><h2>Por día de la semana</h2></div><div class="hbars">${["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].map((d,i)=>`<div class="hbar"><span>${d}</span><div class="track"><i style="width:${wd[i]/maxW*100}%;background:var(--violet)"></i></div><span class="v num">${nf(wd[i])} XP</span></div>`).join("")}</div></section></div>${goldStats()}${planStats()}`;
@@ -265,6 +271,7 @@ function vPerfil(s){
   </div><div class="col">
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
+  ${Notify.panel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
@@ -284,7 +291,8 @@ function openEdit(id){
   form={editId:id,date:r.date,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,note:r.note||"",err:""}; renderModal();
   setTimeout(()=>document.getElementById("fTitle")?.focus(),30);
 }
-function renderModal(){
+function renderModal(){renderModalInner();ovSync()}
+function renderModalInner(){
   const root=document.getElementById("modalRoot"); if(!form){root.innerHTML=dlg?dlgHTML():"";return}
   const xp=actXP(form.min,form.diff);
   root.innerHTML=`<div class="scrim" id="scrim"><form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="mTitle">
@@ -338,7 +346,8 @@ document.addEventListener("click",e=>{
   if(t.id==="resetNo"){state.confirmReset=false;render();return}
   if(t.id==="resetYes"){const at=nowISO();commitRows([...state.rows.values()].filter(r=>!r.deleted_at).map(r=>({...r,deleted_at:at,updated_at:at})));state.confirmReset=false;toast("Progreso borrado.");render();return}
 });
-document.getElementById("fab").addEventListener("click",()=>state.route==="planificador"?openPlanEditor(state.planSel||todayKey()):openAdd(state.route==="historial"?state.histSel||todayKey():state.route==="hoy"?state.todayView||todayKey():todayKey()));
+// El + agrega una actividad (en Plan no aparece: ahí está "Planificar")
+document.getElementById("fab").addEventListener("click",()=>openAdd(state.route==="historial"?state.histSel||todayKey():state.route==="hoy"?state.todayView||todayKey():todayKey()));
 
 
 /* ============ Copia de seguridad ============ */
@@ -364,8 +373,10 @@ function exportJSON(){
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
   const P=state.profile, profile={name:P.name||"",motto:P.motto||"",updated_at:P.updated_at};
   for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) profile[k]=P[k];
-  return JSON.stringify({app:"life-rpg",version:5,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport()},null,2);
+  return JSON.stringify({app:"life-rpg",version:6,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport(),...prefsExport()},null,2);
 }
+/** Versión 6: preferencias de notificaciones. Sin dispositivos, suscripciones, claves ni historial de avisos. */
+function prefsExport(){const p=Notify.exportPrefs();return p?{notification_preferences:p}:{}}
 /** Oro, tienda, objetivos y cofres. Lo que espera al servidor se exporta como ya hecho, igual que se ve en pantalla. */
 function ecoExport(){
   const E=state.eco, claimOp=id=>E.ops.find(o=>o.kind==="claim"&&o.goal_id===id);
@@ -415,7 +426,7 @@ function parseBackup(text){
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
   const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j);
   skipped+=eco.skipped+bs.skipped+pl.skipped;
-  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
+  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,nprefs:Notify.parsePrefs(j.notification_preferences),skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
 }
 /* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
 const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -511,6 +522,7 @@ function applyImport(mode){
   const bossRes=importBosses(P,mode,at);
   const planRes=importPlans(P,mode,at);
   const eco=importEco(P,mode,at);
+  Notify.importPrefs(P.nprefs,mode).catch(()=>{});
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
@@ -617,11 +629,11 @@ document.addEventListener("click",async e=>{if(e.target.closest("#installBtn")&&
 if("serviceWorker" in navigator) addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}));
 
 /* ============ Router y render ============ */
-function go(r){state.route=r;state.confirmDel=null;state.confirmReset=false;try{history.replaceState(null,"","#"+r)}catch(e){}render();window.scrollTo(0,0)}
+// go(), la barra de 5 y el botón Atrás están en nav.js
 function render(){
   if(!Object.keys(state.days).length && !form){ if(!state.demoDays) state.demoDays=makeDemo(); state.demo=true } else state.demo=false;
   const s=compute();
-  document.getElementById("nav").innerHTML=NAV.map(([id,label,icon,short])=>`<a href="#${id}" data-go="${id}" class="${state.route===id?"on":""}" ${state.route===id?'aria-current="page"':""}>${ico(icon)}<span class="nl">${label}</span><span class="ns">${short}</span></a>`).join("");
+  navPaint(); document.body.dataset.route=state.route;
   const v={dashboard:vDashboard,hoy:vHoy,planificador:vPlanner,objetivos:vObjetivos,boss:vBoss,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
   const keepFocus=document.activeElement&&document.activeElement.id; const caret=document.activeElement?.selectionStart;
   document.getElementById("view").innerHTML=v(s);
@@ -630,9 +642,10 @@ function render(){
   document.getElementById("sideDate").textContent=cap(fromKey(todayKey()).toLocaleDateString("es",{weekday:"long",day:"numeric",month:"long"}));
   bossAfterRender();
   focusAfterRender();
+  Notify.afterRender();
 }
 document.getElementById("nav").addEventListener("click",e=>{const a=e.target.closest("a[data-go]");if(a){e.preventDefault();go(a.dataset.go)}});
-const h=(location.hash||"").slice(1); if(NAV.some(n=>n[0]===h)) state.route=h;
+navInit();
 render(); boot();
 addEventListener("online",render); addEventListener("offline",render);
 // cambia de día a medianoche sin recargar

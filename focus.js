@@ -93,18 +93,18 @@ function usedSegs(except) {
 /** Aplica los cambios de fase del Pomodoro que pasaron mientras la app no miraba. Puro: devuelve la sesión nueva. */
 function pomoAdvance(f, now = fnow()) {
   if (f.mode !== "pomodoro" || f.status !== "running") return { f, ev: [] };
-  let x = { ...f, segments: f.segments.slice(), pomodoro: { ...f.pomodoro } }; const ev = [];
+  let x = { ...f, segments: f.segments.slice(), pomodoro: { ...f.pomodoro } }; const ev = [], at = [];   // at: cuándo terminó cada fase (para los avisos)
   for (let i = 0; i < 50; i++) {
     const P = x.pomodoro; if (!P.ends_at || now < tms(P.ends_at)) break;
     if (P.phase === "focus") {
       if (x.segment_started_at) x.segments.push([x.segment_started_at, P.ends_at]);       // el tramo termina justo al final del enfoque
       P.done++; const next = P.done % P.every === 0 ? "long" : "short";
-      x.segment_started_at = null; P.phase = next; P.ends_at = new Date(tms(P.ends_at) + P[next] * 60000).toISOString(); ev.push("focusEnd");
+      at.push(tms(P.ends_at)); x.segment_started_at = null; P.phase = next; P.ends_at = new Date(tms(P.ends_at) + P[next] * 60000).toISOString(); ev.push("focusEnd");
     } else {
-      P.phase = "ready"; P.ends_at = null; P.left = null; x.status = "paused"; ev.push("breakEnd");   // el próximo enfoque espera tu toque
+      at.push(tms(P.ends_at)); P.phase = "ready"; P.ends_at = null; P.left = null; x.status = "paused"; ev.push("breakEnd");   // el próximo enfoque espera tu toque
     }
   }
-  return { f: ev.length ? x : f, ev };
+  return { f: ev.length ? x : f, ev, at };
 }
 const stamp = (f, now) => new Date(Math.max(now, f ? tms(f.updated_at) + 1 : 0)).toISOString();
 function focusNew({ plan, title, cat, mode, pomo }) {
@@ -367,9 +367,10 @@ function focusTick() {
   const now = fnow();
   for (const f of liveFocus()) {
     if (!fActive(f) || !mine(f) || f.mode !== "pomodoro") continue;
-    const { f: x, ev } = pomoAdvance(f, now);
+    const { f: x, ev, at } = pomoAdvance(f, now);
     if (ev.length) {
       putFocus([{ ...x, updated_at: stamp(f, now) }], 300); chime();
+      ev.forEach((k, i) => Notify.focusPhase(f, k, at[i]));   // este dispositivo ya lo avisa: no le llega por push
       const last = ev[ev.length - 1], P = x.pomodoro;
       toast(last === "breakEnd" ? `<b>Descanso terminado</b> · ${esc(x.title)}` : `<b>Enfoque terminado</b> · ${PHASE[P.phase].toLowerCase()} de ${P[P.phase]} min`, "lvl");
       if (dlg && dlg.type === "timer" && dlg.id === f.id) renderModal();

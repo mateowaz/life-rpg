@@ -45,6 +45,7 @@ function planRow(p, { compact = false } = {}) {
   if (act) meta.push(`<span class="num">Real ${act.minutes} min</span>`);
   else if (fm || fActiveFor(p.id)) meta.push(`<span class="num p-focus">${fm} / ${p.planned_minutes} min enfocados</span>`);
   if (p.moved_from && p.moved_from !== p.date && !compact) meta.push(`<span>Movida desde el ${fmtShort(p.moved_from)}</span>`);
+  if (open && p.time && p.reminder_minutes != null && Notify.accountOn()) meta.push(`<span class="p-rem" title="Recordatorio">${ico("bell")}${remText(p.reminder_minutes)}</span>`);
   if (p.note && !compact) meta.push(`<span>· ${esc(p.note)}</span>`);
   let acts = "";
   if (state.confirmPlan === p.id) acts = `<span class="confirm">¿Eliminar esta planificación?${act ? " La actividad real queda." : ""} <button class="btn sm danger" data-pdel="${p.id}">Sí</button><button class="btn sm ghost" data-pnodel>No</button></span>`;
@@ -52,12 +53,14 @@ function planRow(p, { compact = false } = {}) {
   else if (open) acts = `<button class="btn sm" data-pstart="${p.id}">${ico("play")} ${fActiveFor(p.id) ? "Ver enfoque" : "Iniciar enfoque"}</button><button class="btn sm primary" data-pdone="${p.id}">Completar</button>${moreBtn(p)}`;
   const side = acts ? "" : moreBtn(p);
   const menu = state.planMenu === p.id && state.confirmPlan !== p.id ? `<div class="plan-menu">${planMenu(p, st)}</div>` : "";
-  return `<div class="plan pst-${st}"><div class="act c-${p.category}"><div class="cat-ico">${st === "done" ? ico("check") : ico(p.category)}</div>
+  return `<div class="plan pst-${st}" data-pid="${p.id}"><div class="act c-${p.category}"><div class="cat-ico">${st === "done" ? ico("check") : ico(p.category)}</div>
     <div style="min-width:0"><div class="act-t">${p.time ? `<span class="ptime num">${p.time}</span>` : ""}${esc(p.title)}</div>
     <div class="act-m">${meta.join("")}</div>${st === "overdue" ? `<div class="p-late">⚠ ${lateText(p.date)}</div>` : ""}</div>
     <div class="act-r"><span class="pstate pst-${st}">${PLAN_LABEL[st]}</span>${side}</div></div>
     ${acts ? `<div class="plan-acts">${acts}</div>` : ""}${menu}</div>`;
 }
+/** Recordatorio de una planificación (versión 6): null = sin recordatorio, 0 = a la hora, N = minutos antes */
+const remText = (m) => (m === 0 ? "A la hora" : m % 60 === 0 ? `${m / 60} h antes` : m > 60 ? `${Math.floor(m / 60)} h ${m % 60} min antes` : `${m} min antes`);
 const moreBtn = (p) => `<button class="icon-btn" data-pmenu="${p.id}" aria-label="Más acciones" aria-expanded="${state.planMenu === p.id}">${ico("more")}</button>`;
 function planMenu(p, st) {
   const b = [];
@@ -177,13 +180,21 @@ function planStats() {
 function openPlanEditor(date, id, copyOf) {
   const p = id ? state.plans.get(id) : copyOf ? state.plans.get(copyOf) : null, T = todayKey();
   const base = p || { title: "", category: "curso", planned_minutes: 60, intensity: 2, note: "", time: null, date: date && date >= T ? date : T };
+  const rem = p ? (p.reminder_minutes ?? null) : Notify.defaultReminder();
   dlg = { type: "planForm", id: id || null, f: { title: base.title, cat: base.category, min: base.planned_minutes, diff: base.intensity, note: base.note || "", time: base.time || "",
-    date: copyOf ? (base.date >= T ? base.date : T) : base.date }, origDate: p && id ? p.date : null, err: "" };
+    date: copyOf ? (base.date >= T ? base.date : T) : base.date, rem: rem === null ? "" : String(rem), remCustom: rem !== null && !Notify.REM.some(([v]) => v === String(rem)) }, origDate: p && id ? p.date : null, err: "" };
   renderModal(); setTimeout(() => document.getElementById("plTitle")?.focus(), 30);
 }
 function readPlanForm() {
   const g = (i) => document.getElementById(i); if (!g("plTitle") || !dlg) return;
   const f = dlg.f; f.title = g("plTitle").value; f.min = g("plMin").value; f.date = g("plDate").value; f.time = g("plTime").value; f.note = g("plNote").value;
+  if (g("plRem")) { f.remCustom = g("plRem").value === "custom"; if (!f.remCustom) f.rem = g("plRem").value; else if (g("plRemC")) f.rem = g("plRemC").value; }
+}
+function remField(f) {
+  const opts = Notify.REM.concat([["custom", "Personalizado"]]), sel = f.remCustom ? "custom" : f.rem;
+  return `<div class="field"><label for="plRem">Recordatorio</label><div class="rem-row"><select class="inp" id="plRem" ${f.time ? "" : "disabled"}>${opts.map(([v, l]) => `<option value="${v}" ${sel === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+  ${f.remCustom ? `<input class="inp num" id="plRemC" type="number" min="1" max="1440" step="1" value="${esc(f.rem || "")}" aria-label="Minutos antes"><span class="muted-s">min antes</span>` : ""}</div>
+  <small class="muted-s" id="plRemHint" ${f.time ? "hidden" : ""}>Elige una hora para recordarte.</small></div>`;
 }
 function planForm() {
   const f = dlg.f, T = todayKey();
@@ -193,6 +204,7 @@ function planForm() {
   <div class="field"><label for="plTitle">¿Qué piensas hacer?</label><input class="inp" id="plTitle" maxlength="80" placeholder="Ej.: Matemática, capítulo 3" value="${esc(f.title)}"></div>
   <div class="row2"><div class="field"><label for="plDate">Fecha</label><input class="inp" id="plDate" type="date" min="${dlg.origDate && dlg.origDate < T ? dlg.origDate : T}" value="${f.date}"></div>
   <div class="field"><label for="plTime">Hora (opcional)</label><input class="inp num" id="plTime" type="time" value="${esc(f.time)}"></div></div>
+  ${remField(f)}
   <div class="row2"><div class="field"><label for="plMin">Duración estimada (min)</label><input class="inp num" id="plMin" type="number" min="1" max="240" step="1" value="${esc(f.min)}"></div>
   <div class="field"><label>Intensidad</label><div class="seg three">${[1, 2, 3].map((d) => `<button type="button" data-pldiff="${d}" aria-pressed="${+f.diff === d}">${DIFF[d].name}</button>`).join("")}</div></div></div>
   <div class="field"><label for="plNote">Nota (opcional)</label><input class="inp" id="plNote" maxlength="120" placeholder="Algo que quieras recordar" value="${esc(f.note)}"></div>
@@ -207,9 +219,12 @@ function savePlan() {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || "")) { dlg.err = "Elige una fecha."; renderModal(); return; }
   if (f.date < T && f.date !== dlg.origDate) { dlg.err = "Solo puedes planificar para hoy o días futuros."; renderModal(); return; }
   if (f.time && !/^\d{2}:\d{2}$/.test(f.time)) { dlg.err = "La hora no es válida."; renderModal(); return; }
+  const rem = f.rem === "" || f.rem === null ? null : Math.round(+f.rem);
+  if (f.time && rem !== null && !(rem >= (f.remCustom ? 1 : 0) && rem <= 1440)) { dlg.err = "El recordatorio va de 1 a 1440 minutos antes."; renderModal(); return; }
   const at = nowISO(), old = dlg.id ? state.plans.get(dlg.id) : null;
   const row = { ...(old || { id: Store.newId(), status: "planned", moved_from: null, created_at: at, deleted_at: null }),
-    date: f.date, time: f.time || null, title: title.slice(0, 80), category: f.cat, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120), updated_at: at };
+    date: f.date, time: f.time || null, title: title.slice(0, 80), category: f.cat, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120),
+    reminder_minutes: f.time ? rem : null, updated_at: at };
   if (old && old.date !== f.date) row.moved_from = old.moved_from || old.date;
   dlg = null; renderModal();
   putPlans([row]);
@@ -307,7 +322,9 @@ function parsePlans(j) {
     const c = isoOr(r.created_at, nowISO());
     plans.push({ id: r.id.toLowerCase(), date: r.date, time: typeof r.time === "string" && /^\d{2}:\d{2}/.test(r.time) ? r.time.slice(0, 5) : null, title: r.title.trim().slice(0, 80), category: r.category,
       planned_minutes: min, intensity: diff, note: typeof r.note === "string" ? r.note.trim().slice(0, 120) : "", status: ["planned", "skipped", "cancelled"].includes(r.status) ? r.status : "planned",
-      moved_from: typeof r.moved_from === "string" && day.test(r.moved_from) ? r.moved_from : null, created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
+      moved_from: typeof r.moved_from === "string" && day.test(r.moved_from) ? r.moved_from : null,
+      reminder_minutes: Number.isInteger(r.reminder_minutes) && r.reminder_minutes >= 0 && r.reminder_minutes <= 1440 ? r.reminder_minutes : null,   // respaldo versión 6
+      created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
   }
   for (const r of arr(j.focus_sessions)) {
     if (!r || !UUIDre.test(r.id) || (r.planned_activity_id && !UUIDre.test(r.planned_activity_id)) || typeof r.title !== "string" || !r.title.trim() || !CAT[r.category]
@@ -386,7 +403,14 @@ document.addEventListener("click", (e) => {
     if (D.pcdate) { readPlanComplete(); dlg.f.date = D.pcdate; renderModal(); return; }
   }
 });
+document.addEventListener("change", (e) => {
+  if (e.target.id === "plRem" && dlg && dlg.type === "planForm") { readPlanForm(); if (dlg.f.remCustom && !(+dlg.f.rem >= 1)) dlg.f.rem = "15"; renderModal(); document.getElementById(dlg.f.remCustom ? "plRemC" : "plRem")?.focus(); }
+});
 document.addEventListener("input", (e) => {
+  if (e.target.id === "plTime" && dlg && dlg.type === "planForm") {   // sin hora no hay recordatorio
+    const r = document.getElementById("plRem"), h = document.getElementById("plRemHint");
+    if (r) r.disabled = !e.target.value; if (h) h.hidden = !!e.target.value;
+  }
   if (e.target.id === "pcMin" && dlg && dlg.type === "planComplete") {
     const m = Math.round(+e.target.value), x = document.getElementById("pcXP");
     if (x) x.textContent = `+${m >= 1 && m <= 240 ? actXP(m, +dlg.f.diff) : 0} XP`;
