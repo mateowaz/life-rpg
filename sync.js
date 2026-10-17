@@ -10,17 +10,34 @@ const Sync = (() => {
   const COLS = "id,date,category,title,minutes,intensity,note,created_at,updated_at,deleted_at,synced_at";
   const RETRY = [5, 15, 60, 300]; // segundos
   const PAGE = 1000, CHUNK = 500;
+  // Tablas nuevas que la app sube: local → Supabase, columna de conflicto
+  const PUSH = [
+    ["items", "shop_items", "id"],
+    ["goals", "monthly_goals", "id"],
+    ["coins", "coin_transactions", "user_id,id"],
+  ];
+  // Tablas nuevas que se bajan: local, Supabase, columnas, orden secundario
+  const PULL = [
+    ["coins", "coin_transactions", "id,amount,type,source,source_id,description,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["items", "shop_items", "id,item_type,name,description,price,icon,rarity,category,active,is_primary_goal,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["goals", "monthly_goals", "id,year,month,title,description,goal_type,category,target_value,manual_progress,coin_reward,completed_at,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
+    ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
+  ];
 
   let sb = null, session = null, linked = null;
   let status = "local"; // local | confirm | syncing | synced | offline | error
   let busy = false, again = false, debounce = null, retryTimer = null, retryN = 0;
   let offset = 0, pendingN = 0, lastSync = null, channel = null, uploadCount = 0;
-  const listeners = new Set();
+  const listeners = new Set(), noticeFns = new Set();
+  const notice = (n) => noticeFns.forEach((f) => { try { f(n); } catch (e) {} });
   const emit = () => listeners.forEach((f) => { try { f(); } catch (e) {} });
   const uid = () => (session && session.user ? session.user.id : null);
   const ready = () => !!(enabled && session && linked && linked === uid());
 
-  async function refreshCount() { try { pendingN = (await Store.pendingList()).length; } catch (e) {} }
+  async function refreshCount() {
+    try { pendingN = (await Store.pendingList()).length + (await Store.ops()).filter((o) => !o.done).length; } catch (e) {}
+  }
 
   function errText(e) {
     const m = String((e && (e.message || e.error_description || e.msg)) || e || "");
@@ -45,7 +62,8 @@ const Sync = (() => {
       if (window.App) await App.reload();
     }
     if (!linked) {
-      const n = (await Store.allRows()).filter((r) => !r.deleted_at).length;
+      const n = (await Store.allRows()).filter((r) => !r.deleted_at).length
+        + (await Store.all("items")).filter((r) => !r.deleted_at).length + (await Store.all("goals")).filter((r) => !r.deleted_at).length;
       if (n > 0) { uploadCount = n; status = "confirm"; emit(); return; }
       await Store.setMeta("account", id); linked = id;
     }
@@ -58,6 +76,11 @@ const Sync = (() => {
       channel = sb.channel("life-rpg-" + uid())
         .on("postgres_changes", { event: "*", schema: "public", table: "activities", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "profiles", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "coin_transactions", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "shop_items", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "purchases", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "monthly_goals", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "level_chests", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .subscribe();
     } catch (e) { channel = null; }
   }
@@ -87,7 +110,7 @@ const Sync = (() => {
 
       // 2. Subir
       const pend = await Store.pendingList();
-      const actPend = pend.filter((p) => p.id !== "profile");
+      const actPend = pend.filter((p) => p.id !== "profile" && !p.id.includes(":"));
       for (let i = 0; i < actPend.length; i += CHUNK) {
         const part = actPend.slice(i, i + CHUNK);
         const rows = await Store.getRows(part.map((p) => p.id));
@@ -124,6 +147,83 @@ const Sync = (() => {
       const { data: prof, error: e3 } = await sb.from("profiles").select("name,motto,updated_at").maybeSingle();
       if (e3) throw e3;
       if (prof && (await Store.applyRemoteProfile(prof))) changedLocal = true;
+
+      // 4. Tablas nuevas: subir recompensas, objetivos y Oro derivado
+      for (const [t, table, conflict] of PUSH) {
+        const P = t.slice(0, -1) + ":"; // item: goal: coin:
+        const mine = pend.filter((p) => p.id.startsWith(P));
+        for (let i = 0; i < mine.length; i += CHUNK) {
+          const part = mine.slice(i, i + CHUNK);
+          let rows = await Store.getT(t, part.map((p) => p.id.slice(P.length)));
+          if (t === "coins") rows = rows.filter((r) => Store.DERIVED.includes(r.source)); // el resto lo escribe el servidor
+          if (rows.length) {
+            const { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
+            if (error) throw error;
+          }
+          await Store.clearPending(part);
+        }
+      }
+
+      // 5. Compras, reclamos y cofres: los decide el servidor, en el orden en que se hicieron
+      for (const op of await Store.ops()) {
+        if (op.done) continue;
+        const call = op.kind === "buy" ? sb.rpc("buy_reward", { p_id: op.id, p_item: op.item_id, p_at: op.at })
+          : op.kind === "claim" ? sb.rpc("claim_goal", { p_goal: op.goal_id, p_at: op.at })
+          : sb.rpc("open_chest", { p_level: op.level, p_at: op.at });
+        const { data, error } = await call;
+        if (error) throw error;
+        const res = String(data || "");
+        if (res === "ok" || res === "already" || res.startsWith("rejected")) {
+          // listo en el servidor; la operación se quita cuando bajan sus filas (paso 7)
+          await Store.putOp({ ...op, done: res });
+          if (res.startsWith("rejected")) notice({ type: "buy_rejected", reason: res.split(":")[1], op });
+        } else {
+          // no_found, not_completed, not_reached, invalid: se deshace lo local
+          if (op.kind === "buy") {
+            const [p] = await Store.getT("purchases", [op.id]);
+            if (p) await Store.put("purchases", [{ ...p, status: "rejected", reason: "not_found", updated_at: new Date().toISOString() }], { pending: false });
+          }
+          await Store.delOps([op.key]);
+          notice({ type: op.kind + "_failed", result: res, op });
+        }
+        changedLocal = true;
+      }
+
+      // 6. Bajar las tablas nuevas
+      for (const [t, table, cols, second] of PULL) {
+        const ck = "cursor:" + table;
+        const cur = (await Store.getMeta(ck)) || "1970-01-01T00:00:00.000Z";
+        const sinceT = new Date(Date.parse(cur) - 120000).toISOString();
+        let off = 0, max = cur;
+        for (;;) {
+          const { data, error } = await sb.from(table).select(cols).gt("synced_at", sinceT)
+            .order("synced_at", { ascending: true }).order(second, { ascending: true }).range(off, off + PAGE - 1);
+          if (error) throw error;
+          if (data.length) {
+            // compras y cofres: siempre manda el servidor
+            if (await Store.applyRemoteT(t, data, { force: t === "purchases" || t === "chests" })) changedLocal = true;
+            for (const r of data) if (Date.parse(r.synced_at) > Date.parse(max)) max = new Date(Date.parse(r.synced_at)).toISOString();
+          }
+          if (data.length < PAGE) break;
+          off += PAGE;
+        }
+        await Store.setMeta(ck, max);
+      }
+
+      // 7. Quitar las operaciones que el servidor ya resolvió y ya bajaron
+      {
+        const ops = await Store.ops();
+        if (ops.length) {
+          const purchases = new Map((await Store.all("purchases")).map((p) => [p.id, p]));
+          const goals = new Map((await Store.all("goals")).map((g) => [g.id, g]));
+          const chests = new Set((await Store.all("chests")).map((c) => c.level));
+          const gone = ops.filter((o) =>
+            (o.kind === "buy" && purchases.get(o.id) && purchases.get(o.id).status !== "pending") ||
+            (o.kind === "claim" && goals.get(o.goal_id) && goals.get(o.goal_id).claimed_at) ||
+            (o.kind === "chest" && chests.has(o.level))).map((o) => o.key);
+          if (gone.length) { await Store.delOps(gone); changedLocal = true; }
+        }
+      }
 
       status = "synced"; lastSync = Date.now(); retryN = 0;
     } catch (e) {
@@ -194,6 +294,8 @@ const Sync = (() => {
     /** Hora actual corregida con la del servidor */
     now: () => new Date(Date.now() + offset).toISOString(),
     onChange: (f) => listeners.add(f),
+    /** Avisos del servidor: compra rechazada, cofre o reclamo que no se pudo confirmar */
+    onNotice: (f) => noticeFns.add(f),
     get info() {
       return { enabled, signedIn: !!session, email: session && session.user ? session.user.email : "",
         status: session ? status : "local", pending: pendingN, lastSync, uploadCount, linked: ready() };

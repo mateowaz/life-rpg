@@ -13,7 +13,8 @@ function makeDemo(){
 }
 
 /* ============ Estado y guardado ============ */
-const state={days:{},rows:new Map(),profile:{name:"",motto:"",updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null};
+const state={days:{},rows:new Map(),profile:{name:"",motto:"",updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
+  eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -26,23 +27,29 @@ const App=window.App={
   /** Vuelve a leer todo de la copia local (después de sincronizar o cerrar sesión) */
   async reload(){
     try{const rows=await Store.allRows();state.rows=new Map(rows.map(r=>[r.id,r]));state.profile=await Store.getProfile()}catch(e){}
-    rebuildDays(); render();
+    try{
+      const [coins,items,purchases,goals,chests,ops]=await Promise.all(["coins","items","purchases","goals","chests"].map(t=>Store.all(t)).concat(Store.ops()));
+      const byId=a=>new Map(a.map(r=>[r.id,r]));
+      state.eco={coins:byId(coins),items:byId(items),purchases:byId(purchases),goals:byId(goals),chests:new Map(chests.map(c=>[c.level,c])),ops};
+    }catch(e){}
+    rebuildDays(); syncEconomy(false); render();
   }
 };
 async function boot(){
   const ok=await Store.init();
   state.mode=ok?"device":"memory";
   await App.reload();
-  state.ready=true; render();
+  state.ready=true; syncEconomy(false); render();
   if(navigator.storage&&navigator.storage.persist) navigator.storage.persist().catch(()=>{});
   Sync.onChange(onSyncChange);
+  Sync.onNotice(onSyncNotice);
   Sync.init().catch(()=>{});
 }
 const nowISO=()=>Sync.now();
 /** Guarda filas cambiadas: memoria → dispositivo → cola de sincronización */
 function commitRows(rows){
   for(const r of rows) state.rows.set(r.id,r);
-  rebuildDays();
+  rebuildDays(); syncEconomy(true);
   Store.putRows(rows).then(()=>Sync.changed()).catch(()=>toast("No se pudo guardar en este dispositivo."));
 }
 let profTimer;
@@ -53,23 +60,26 @@ function saveProfile(){
 
 /* ============ Acciones ============ */
 function addActivity(k,a){
-  const before=compute();
+  const before=compute(), g0=goldState(state.eco).balance;
   if(state.demo){state.demo=false}
   const at=nowISO();
   commitRows([{id:Store.newId(),date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",created_at:at,updated_at:at,deleted_at:null}]);
   const after=compute();
   toast(`<b>+${a.xp} XP</b> · ${CAT[a.cat].name}`);
+  goldToast(goldState(state.eco).balance-g0);
   if(after.perDay[k]?.full && !before.perDay[k]?.full) toast(`<b>Día completo</b> · +${FULL_DAY_BONUS} XP de bonus`);
   if(after.G.level>before.G.level) toast(`<b>¡Nivel ${after.G.level}!</b> ${after.rank.name!==before.rank.name?"Nuevo rango: "+after.rank.name:""}`,"lvl");
+  for(const c of CHESTS) if(c.level>before.G.level&&c.level<=after.G.level&&!state.eco.chests.has(c.level)) toast(`<b>Cofre desbloqueado</b> · ${c.name}`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) toast(`Logro desbloqueado: <b>${ACH.find(x=>x.id===id).name}</b>`,"lvl");
   render();
 }
 function editActivity(id,k,a){
   const old=state.rows.get(id); if(!old) return;
-  const before=compute();
+  const before=compute(), g0=goldState(state.eco).balance;
   commitRows([{...old,date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",updated_at:nowISO()}]);
   const after=compute();
   toast(`Actividad actualizada · <b>${a.xp} XP</b>`);
+  goldToast(goldState(state.eco).balance-g0);
   for(const x in after.unlocked) if(!before.unlocked[x]) toast(`Logro desbloqueado: <b>${ACH.find(y=>y.id===x).name}</b>`,"lvl");
   render();
 }
@@ -77,7 +87,9 @@ function delActivity(k,id){
   const old=state.rows.get(id); if(!old) return;
   const at=nowISO();
   state.confirmDel=null;
+  const g0=goldState(state.eco).balance;
   commitRows([{...old,deleted_at:at,updated_at:at}]);
+  goldToast(goldState(state.eco).balance-g0);
   render();
 }
 
@@ -99,7 +111,7 @@ function toast(html,cls=""){
 }
 function actRow(k,a){
   const del = state.confirmDel===a.id
-    ? `<span class="confirm">¿Eliminar? <button class="btn sm danger" data-del="${k}|${a.id}">Sí</button><button class="btn sm ghost" data-nodel>No</button></span>`
+    ? `<span class="confirm">¿Eliminar?${goldLossNote(a)} <button class="btn sm danger" data-del="${k}|${a.id}">Sí</button><button class="btn sm ghost" data-nodel>No</button></span>`
     : `<button class="icon-btn edit" data-edit="${a.id}" aria-label="Editar actividad">${ico("edit")}</button><button class="icon-btn" data-askdel="${a.id}" aria-label="Eliminar actividad">${ico("trash")}</button>`;
   return `<div class="act c-${a.cat}"><div class="cat-ico">${ico(a.cat)}</div>
     <div style="min-width:0"><div class="act-t">${esc(a.title)}</div>
@@ -124,7 +136,7 @@ function goals(s){
 function totalXPFor(lv){let t=0;for(let L=1;L<lv;L++)t+=needG(L);return t}
 
 /* ============ Vistas ============ */
-const NAV=[["dashboard","Dashboard","dash"],["hoy","Hoy","hoy"],["historial","Historial","hist"],["logros","Logros","logros"],["estadisticas","Estadísticas","stats"],["perfil","Perfil","perfil"]];
+const NAV=[["dashboard","Dashboard","dash","Inicio"],["hoy","Hoy","hoy","Hoy"],["objetivos","Objetivos","target","Metas"],["historial","Historial","hist","Historial"],["logros","Logros","logros","Logros"],["tienda","Tienda","shop","Tienda"],["estadisticas","Estadísticas","stats","Estad."],["perfil","Perfil","perfil","Perfil"]];
 function header(title,sub,btn=true){
   return `<div class="mob-head"><svg class="brand-mark" viewBox="0 0 40 40"><path d="M20 2l15 7v11c0 9-6.5 15.5-15 18C11.5 35.5 5 29 5 20V9z" fill="none" stroke="url(#g-gold)" stroke-width="2"/><path d="M20 9l3 7h7l-5.5 4.5 2 7.5L20 23.5 13.5 28l2-7.5L10 16h7z" fill="url(#g-vio)"/></svg><b>LIFE RPG</b></div>
   <div class="top"><div><h1>${title}</h1>${sub?`<p>${sub}</p>`:""}</div>${btn?`<button class="btn primary" data-add="${todayKey()}">${ico("plus")} Agregar actividad</button>`:""}</div>`+
@@ -148,6 +160,7 @@ function vDashboard(s){
     <div class="streaks">
       <div class="stat"><svg class="flame"><use href="#i-flame"/></svg><div><b class="num">${s.curStreak} ${s.curStreak===1?"día":"días"}</b><span>Racha actual</span></div></div>
       <div class="stat"><svg class="trophy"><use href="#i-crown"/></svg><div><b class="num">${s.bestStreak} ${s.bestStreak===1?"día":"días"}</b><span>Mejor racha</span></div></div>
+      ${goldStat()}
     </div>
   </section>
   <section class="cats">${CATS.map(c=>{const L=levelOf(s.catXP[c.id],needC);const today=(dataDays()[T]?.activities||[]).filter(a=>a.cat===c.id).reduce((t,a)=>t+a.xp,0);
@@ -157,6 +170,7 @@ function vDashboard(s){
   <div class="grid2">
     <section class="panel"><div class="panel-h"><h2>Actividades de hoy</h2><button class="link" data-go="hoy">Ver día</button></div>${dayList(T,s)}</section>
     <div class="col">
+      ${dashChest(s)}${dashSaving()}${dashMonthGoals()}
       <section class="panel"><div class="panel-h"><h2>Próximos objetivos</h2></div>${goals(s)}</section>
       <section class="panel"><div class="panel-h"><h2>Logros recientes</h2><button class="link" data-go="logros">Ver todos</button></div>
       ${recent.length?`<div class="ach-list">${recent.map(([id,k])=>{const a=ACH.find(x=>x.id===id);return `<div class="ach"><div class="medal">${medal(true)}</div><div><b>${a.name}</b><span>${fmtShort(k)} · ${a.desc}</span></div></div>`}).join("")}</div>`:`<div class="empty" style="padding:10px">Tu primer logro llega con tu primera actividad.</div>`}
@@ -217,7 +231,7 @@ function vStats(s){
   <div style="overflow-x:auto"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="XP diaria de los últimos 30 días">${grid}${bars}${xl}</svg></div></section>
   <div class="grid2"><section class="panel"><div class="panel-h"><h2>XP por categoría</h2></div><div class="hbars">${CATS.map(c=>`<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${s.catXP[c.id]/maxC*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${nf(s.catXP[c.id])} XP</span></div>`).join("")}</div>
   <div class="hbars" style="margin-top:18px">${CATS.map(c=>`<div class="hbar"><span style="color:var(--muted)">${c.name}</span><span class="num" style="color:var(--muted);font-size:12.5px">${s.cnt[c.id]} actividades · ${nf(s.catMin[c.id]/60)} h</span><span class="v num">Nv ${s.catLv[c.id]}</span></div>`).join("")}</div></section>
-  <section class="panel"><div class="panel-h"><h2>Por día de la semana</h2></div><div class="hbars">${["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].map((d,i)=>`<div class="hbar"><span>${d}</span><div class="track"><i style="width:${wd[i]/maxW*100}%;background:var(--violet)"></i></div><span class="v num">${nf(wd[i])} XP</span></div>`).join("")}</div></section></div>`;
+  <section class="panel"><div class="panel-h"><h2>Por día de la semana</h2></div><div class="hbars">${["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].map((d,i)=>`<div class="hbar"><span>${d}</span><div class="track"><i style="width:${wd[i]/maxW*100}%;background:var(--violet)"></i></div><span class="v num">${nf(wd[i])} XP</span></div>`).join("")}</div></section></div>${goldStats()}`;
 }
 
 function vPerfil(s){
@@ -227,6 +241,7 @@ function vPerfil(s){
   <div style="display:flex;flex-direction:column;gap:14px"><div class="field"><label for="pName">Nombre</label><input class="inp" id="pName" maxlength="40" placeholder="Cómo quieres que te llame la app" value="${esc(state.profile.name||"")}"></div>
   <div class="field"><label for="pMotto">Lema</label><input class="inp" id="pMotto" maxlength="80" placeholder="Ej.: Un poco cada día" value="${esc(state.profile.motto||"")}"></div>
   <div class="hbars">${CATS.map(c=>{const L=levelOf(s.catXP[c.id],needC);return `<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${L.pct*100}%;background:var(--c-${c.id})"></i></div><span class="v num">Nv ${L.level}</span></div>`}).join("")}</div></div></section>
+  ${treasurePanel(s)}
   <section class="panel"><div class="panel-h"><h2>Cómo se gana XP</h2></div>
   <table class="rules"><tr><th>Regla</th><th>XP</th></tr>
   <tr><td>Cada actividad</td><td class="num">(10 + minutos) × intensidad</td></tr>
@@ -240,7 +255,7 @@ function vPerfil(s){
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
+  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
   <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
   </div></div>`;
@@ -259,7 +274,7 @@ function openEdit(id){
   setTimeout(()=>document.getElementById("fTitle")?.focus(),30);
 }
 function renderModal(){
-  const root=document.getElementById("modalRoot"); if(!form){root.innerHTML="";return}
+  const root=document.getElementById("modalRoot"); if(!form){root.innerHTML=dlg?dlgHTML():"";return}
   const xp=actXP(form.min,form.diff);
   root.innerHTML=`<div class="scrim" id="scrim"><form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="mTitle">
   <div><div class="eyebrow">${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">${form.editId?"Editar actividad":"Nueva actividad"}</h2></div>
@@ -289,10 +304,11 @@ document.addEventListener("submit",e=>{
   const k=form.date, editId=form.editId; form=null; renderModal();
   if(editId) editActivity(editId,k,a); else addActivity(k,a);
 });
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&form){form=null;renderModal()}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&form){form=null;renderModal()}else if(e.key==="Escape"&&dlg&&!dlg.busy){closeDlg()}});
 
 document.addEventListener("click",e=>{
   if(e.target.id==="scrim"){form=null;renderModal();return}
+  if(e.target.id==="dlgScrim"){if(!dlg?.busy)closeDlg();return}
   const t=e.target.closest("button,a,[data-sel]"); if(!t) return;
   if(t.id==="fCancel"){form=null;renderModal();return}
   if(t.dataset.fcat){readForm();form.cat=t.dataset.fcat;renderModal();return}
@@ -322,7 +338,7 @@ function backupPanel(){
   const P=bk.pending;
   if(P){
     const cur=Object.keys(state.days).length;
-    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades</span></div>
+    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}</span></div>
     <b>${P.first?`Del ${fmtLong(P.first)} al ${fmtLong(P.last)}`:"Sin actividades"}</b>
     <span style="font-size:13px;color:var(--muted)">${P.profile.name?`Personaje: ${esc(P.profile.name)}. `:""}${P.skipped?`Se omitirán ${P.skipped} registros inválidos. `:""}${cur?`Ahora tienes ${cur} días guardados. <b style="color:var(--fg)">Combinar</b> suma lo del archivo sin borrar nada. <b style="color:var(--fg)">Reemplazar</b> deja solo lo del archivo.`:"No tienes datos guardados, así que se cargará todo el archivo."}</span>
     ${bk.replaceAsk?`<div class="confirm" style="flex-wrap:wrap;margin-top:4px">Se borrarán tus ${cur} días actuales y quedará solo el archivo. ¿Seguro? <button class="btn sm danger" id="impReplaceYes">Sí, reemplazar</button><button class="btn sm ghost" id="impReplaceNo">Volver</button></div>`
@@ -334,7 +350,18 @@ function exportJSON(){
   const rows=[...state.rows.values()].filter(r=>!r.deleted_at).sort((x,y)=>x.date.localeCompare(y.date)||x.created_at.localeCompare(y.created_at));
   // "days" repite lo mismo en el formato viejo, para que también lo lea la versión de Claude
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
-  return JSON.stringify({app:"life-rpg",version:2,exportedAt:new Date().toISOString(),profile:{name:state.profile.name||"",motto:state.profile.motto||"",updated_at:state.profile.updated_at},activities:rows,days},null,2);
+  return JSON.stringify({app:"life-rpg",version:3,exportedAt:new Date().toISOString(),profile:{name:state.profile.name||"",motto:state.profile.motto||"",updated_at:state.profile.updated_at},activities:rows,days,...ecoExport()},null,2);
+}
+/** Oro, tienda, objetivos y cofres. Lo que espera al servidor se exporta como ya hecho, igual que se ve en pantalla. */
+function ecoExport(){
+  const E=state.eco, claimOp=id=>E.ops.find(o=>o.kind==="claim"&&o.goal_id===id);
+  return {
+    coin_transactions:[...E.coins.values()].filter(c=>!c.deleted_at).sort((a,b)=>a.created_at.localeCompare(b.created_at)),
+    shop_items:[...E.items.values()].filter(i=>!i.deleted_at),
+    purchases:[...E.purchases.values()].filter(p=>p.status!=="rejected").sort((a,b)=>a.purchased_at.localeCompare(b.purchased_at)),
+    monthly_goals:[...E.goals.values()].filter(g=>!g.deleted_at).map(g=>{const o=!g.claimed_at&&claimOp(g.id);return o?{...g,claimed_at:o.at}:g}),
+    level_chests:[...E.chests.values(),...E.ops.filter(o=>o.kind==="chest"&&!E.chests.has(o.level)).map(o=>({level:o.level,name:o.name,gold:o.gold,claimed_at:o.at,updated_at:o.at}))].sort((a,b)=>a.level-b.level)
+  };
 }
 async function doExport(){
   bk.err="";bk.copyText="";
@@ -372,8 +399,80 @@ function parseBackup(text){
     }
   }
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
-  const pr=j.profile||{};
-  return {rows,dayCount:ks.length,actCount:live.length,skipped,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null}};
+  const pr=j.profile||{}, eco=parseEco(j);
+  skipped+=eco.skipped;
+  return {rows,...eco,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null}};
+}
+/* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
+const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isoOr=(v,d)=>v&&!isNaN(Date.parse(v))?new Date(v).toISOString():d;
+function parseEco(j){
+  const arr=x=>Array.isArray(x)?x:[], now=nowISO(); let skipped=0;
+  const items=[], goals=[], purchases=[], chests=[];
+  for(const r of arr(j.shop_items)){
+    const price=Math.round(+(r&&r.price));
+    if(!r||!UUIDre.test(r.id)||typeof r.name!=="string"||!r.name.trim()||!(price>=1&&price<=1000000)){skipped++;continue}
+    const c=isoOr(r.created_at,now);
+    items.push({id:r.id,item_type:r.item_type==="wishlist"?"wishlist":"reward",name:r.name.trim().slice(0,40),description:typeof r.description==="string"?r.description.trim().slice(0,120):"",
+      price,icon:SHOP_ICONS.includes(r.icon)?r.icon:"gift",rarity:RARITY[r.rarity]?r.rarity:"common",category:typeof r.category==="string"&&r.category.trim()?r.category.trim().slice(0,30):null,
+      active:r.active!==false,is_primary_goal:r.item_type==="wishlist"&&!!r.is_primary_goal&&r.active!==false,created_at:c,updated_at:isoOr(r.updated_at,c),deleted_at:null});
+  }
+  for(const r of arr(j.monthly_goals)){
+    const T=r&&GOAL_TYPES[r.goal_type], target=Math.round(+(r&&r.target_value)), y=+(r&&r.year), m=+(r&&r.month), rw=Math.round(+(r&&r.coin_reward)||0);
+    if(!T||!UUIDre.test(r.id)||!(target>=1&&target<=1000000)||!(y>=2000&&y<=2100)||!(m>=1&&m<=12)||typeof r.title!=="string"||!r.title.trim()||(T.cat&&!CAT[r.category])||!(rw>=0&&rw<=10000)){skipped++;continue}
+    const c=isoOr(r.created_at,now);
+    goals.push({id:r.id,year:y,month:m,title:r.title.trim().slice(0,60),description:typeof r.description==="string"?r.description.trim().slice(0,120):"",goal_type:r.goal_type,category:T.cat?r.category:null,
+      target_value:target,manual_progress:Math.max(0,Math.round(+r.manual_progress||0)),coin_reward:rw,completed_at:null,claimed_at:isoOr(r.claimed_at,null),created_at:c,updated_at:isoOr(r.updated_at,c),deleted_at:null});
+  }
+  for(const r of arr(j.purchases)){
+    if(!r||!UUIDre.test(r.id)||!UUIDre.test(r.item_id)||(r.status!=="ok"&&r.status!=="pending")){if(!(r&&r.status==="rejected"))skipped++;continue}
+    purchases.push({id:r.id,item_id:r.item_id,item_name:typeof r.item_name==="string"?r.item_name.slice(0,40):"",purchased_at:isoOr(r.purchased_at,now)});
+  }
+  for(const r of arr(j.level_chests)){const c=r&&CHESTS.find(x=>x.level===+r.level); if(!c){skipped++;continue} chests.push({level:c.level,claimed_at:isoOr(r.claimed_at,now)})}
+  return {items,goals,purchases,chests,coinCount:arr(j.coin_transactions).length,skipped};
+}
+/** Aplica la parte de Oro del respaldo. Nunca copia Oro: lo derivado se recalcula y lo demás lo confirma el servidor. */
+function importEco(P,mode,at){
+  const E=state.eco, claiming=id=>E.ops.some(o=>o.kind==="claim"&&o.goal_id===id), res={items:0,goals:0,claims:0,chests:0,buys:0,skippedBuys:0};
+  // Recompensas y deseos
+  const inItems=new Set(P.items.map(i=>i.id)), items=[];
+  if(mode==="replace") for(const i of E.items.values()) if(!i.deleted_at&&!inItems.has(i.id)) items.push({...i,deleted_at:at,is_primary_goal:false,updated_at:at});
+  for(const r of P.items){const l=E.items.get(r.id); if(mode==="replace"||!l||Date.parse(r.updated_at)>Date.parse(l.updated_at)){items.push(mode==="replace"?{...r,updated_at:at}:r);res.items++}}
+  // Un solo objetivo principal: el más reciente (en Reemplazar, el del archivo)
+  const after=new Map(E.items); for(const r of items) after.set(r.id,r);
+  const prim=[...after.values()].filter(i=>i.is_primary_goal&&!i.deleted_at).sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
+  for(const i of prim.slice(1)){const k=items.findIndex(x=>x.id===i.id), row={...i,is_primary_goal:false,updated_at:at}; if(k>=0) items[k]=row; else items.push(row)}
+  if(items.length) putItems(items);
+  // Objetivos mensuales: un objetivo reclamado nunca vuelve atrás; un reclamo del archivo se confirma con el servidor
+  const inGoals=new Set(P.goals.map(g=>g.id)), goals=[], wantClaim=[];
+  if(mode==="replace") for(const g of E.goals.values()) if(!g.deleted_at&&!g.claimed_at&&!claiming(g.id)&&!inGoals.has(g.id)) goals.push({...g,deleted_at:at,updated_at:at});
+  for(const r of P.goals){
+    const l=E.goals.get(r.id), locked=l&&(l.claimed_at||claiming(l.id));
+    if(r.claimed_at&&!locked) wantClaim.push(r);
+    if(locked) continue;
+    if(mode==="replace"||!l||Date.parse(r.updated_at)>Date.parse(l.updated_at)){goals.push({...r,claimed_at:null,completed_at:l?l.completed_at:null,updated_at:mode==="replace"?at:r.updated_at});res.goals++}
+  }
+  if(goals.length){for(const g of goals) E.goals.set(g.id,g); Store.put("goals",goals).catch(()=>{})}
+  const ops=[]; let seq=Date.now();
+  for(const r of wantClaim){const g=E.goals.get(r.id); if(g&&!g.deleted_at&&goalProgress(g,state.days)>=g.target_value){ops.push({key:"claim:"+g.id,kind:"claim",goal_id:g.id,amount:g.coin_reward,title:g.title,at:r.claimed_at,seq:seq++});res.claims++}}
+  // Cofres: el servidor los abre una sola vez y solo si llegaste al nivel
+  const lvl=compute().G.level;
+  for(const c of P.chests){const d=CHESTS.find(x=>x.level===c.level); if(!E.chests.has(c.level)&&!E.ops.some(o=>o.kind==="chest"&&o.level===c.level)&&lvl>=c.level){ops.push({key:"chest:"+c.level,kind:"chest",level:c.level,gold:d.gold,name:d.name,at:c.claimed_at,seq:seq++});res.chests++}}
+  for(const o of ops){E.ops.push(o);Store.putOp(o).catch(()=>{})}
+  // Compras que faltan: se vuelven a pedir con el mismo id y el precio real de la tienda
+  const buys=[];
+  for(const p of P.purchases){
+    if(E.purchases.has(p.id)) continue;
+    const it=E.items.get(p.item_id), b=goldState(E).balance;
+    if(!it||!it.active||it.deleted_at||b<0||b<it.price){res.skippedBuys++;continue}
+    const row={id:p.id,item_id:it.id,item_type:it.item_type,item_name:it.name,item_icon:it.icon,item_rarity:it.rarity,price:it.price,status:"pending",reason:null,purchased_at:p.purchased_at,updated_at:at};
+    const op={key:"buy:"+p.id,kind:"buy",id:p.id,item_id:it.id,price:it.price,name:it.name,at:p.purchased_at,seq:seq++};
+    E.purchases.set(p.id,row); E.ops.push(op); buys.push(row); Store.putOp(op).catch(()=>{}); res.buys++;
+    if(it.item_type==="wishlist") putItems([{...it,active:false,is_primary_goal:false,updated_at:at}]);
+  }
+  if(buys.length) Store.put("purchases",buys,{pending:false}).catch(()=>{});
+  syncEconomy(false); Sync.changed(300);
+  return res;
 }
 function applyImport(mode){
   const P=bk.pending; if(!P) return;
@@ -391,9 +490,13 @@ function applyImport(mode){
   if(mode==="replace"||!state.profile.name){ if(P.profile.name){state.profile.name=P.profile.name;profChanged=true} }
   if(mode==="replace"||!state.profile.motto){ if(P.profile.motto){state.profile.motto=P.profile.motto;profChanged=true} }
   if(profChanged) saveProfile();
+  const eco=importEco(P,mode,at);
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
+  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`].filter(Boolean);
+  if(ex.length) toast(`También se importaron ${ex.join(", ")}.`);
+  if(eco.skippedBuys) toast(`${eco.skippedBuys} compra${eco.skippedBuys===1?"":"s"} del archivo no se repitió: la recompensa ya no está activa o no alcanza el Oro.`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) {toast(`Logros actualizados según tu historial.`);break}
   render();
 }
@@ -402,7 +505,7 @@ document.addEventListener("change",e=>{
   const f=e.target.files[0]; e.target.value="";
   if(f.size>20*1024*1024){bk.err="El archivo es demasiado grande para ser un respaldo.";render();return}
   const r=new FileReader();
-  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount) throw "El archivo no tiene actividades para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
+  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
   r.onerror=()=>{bk.err="No se pudo leer el archivo.";render()};
   r.readAsText(f);
 });
@@ -498,8 +601,8 @@ function go(r){state.route=r;state.confirmDel=null;state.confirmReset=false;try{
 function render(){
   if(!Object.keys(state.days).length && !form){ if(!state.demoDays) state.demoDays=makeDemo(); state.demo=true } else state.demo=false;
   const s=compute();
-  document.getElementById("nav").innerHTML=NAV.map(([id,label,icon])=>`<a href="#${id}" data-go="${id}" class="${state.route===id?"on":""}" ${state.route===id?'aria-current="page"':""}>${ico(icon)}<span>${label}</span></a>`).join("");
-  const v={dashboard:vDashboard,hoy:vHoy,historial:vHistorial,logros:vLogros,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
+  document.getElementById("nav").innerHTML=NAV.map(([id,label,icon,short])=>`<a href="#${id}" data-go="${id}" class="${state.route===id?"on":""}" ${state.route===id?'aria-current="page"':""}>${ico(icon)}<span class="nl">${label}</span><span class="ns">${short}</span></a>`).join("");
+  const v={dashboard:vDashboard,hoy:vHoy,objetivos:vObjetivos,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
   const keepFocus=document.activeElement&&document.activeElement.id; const caret=document.activeElement?.selectionStart;
   document.getElementById("view").innerHTML=v(s);
   if(keepFocus&&(keepFocus==="pName"||keepFocus==="pMotto"||keepFocus==="accEmail")){const el=document.getElementById(keepFocus);if(el){el.focus();try{el.setSelectionRange(caret,caret)}catch(e){}}}
