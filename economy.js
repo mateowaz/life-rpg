@@ -89,6 +89,7 @@ function goldState(eco) {
   for (const o of eco.ops) {
     if (o.kind === "claim") { const g = eco.goals.get(o.goal_id); if (!(g && g.claimed_at)) pendIn += o.amount; }
     if (o.kind === "chest" && !eco.chests.has(o.level)) pendIn += o.gold;
+    if (o.kind === "boss") { const b = eco.bosses && eco.bosses.get(o.boss_id); if (!(b && b.claimed_at)) pendIn += o.amount; }
   }
   return { balance: earned - spent + pendIn - pendOut, earned: earned + pendIn, spent: spent + pendOut, pending: pendIn + pendOut };
 }

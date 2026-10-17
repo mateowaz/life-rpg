@@ -12,9 +12,10 @@
      purchases   compras (confirmadas, pendientes o rechazadas)
      goals       objetivos mensuales
      chests      cofres por nivel ya abiertos
+     bosses      Boss de cada mes (versión 4)
      ops         compras, reclamos y cofres que esperan la confirmación del servidor */
 const Store = (() => {
-  const NAME = "liferpg", VERSION = 3;
+  const NAME = "liferpg", VERSION = 4;
   let db = null;
   const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map() }; // si el navegador no deja guardar
   /* Tablas nuevas (versión 3). prefix = cómo se anotan en la cola de pendientes; sin prefix nunca se suben
@@ -25,6 +26,7 @@ const Store = (() => {
     goals:     { key: "id",    prefix: "goal:" },
     purchases: { key: "id" },
     chests:    { key: "level" },
+    bosses:    { key: "id",    prefix: "boss:" },   // versión 4
   };
   for (const t in T) mem[t] = new Map();
 
@@ -49,6 +51,13 @@ const Store = (() => {
     const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
     const x = [...b].map((v) => v.toString(16).padStart(2, "0")).join("");
     return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+  }
+  /** Campos del perfil. Los de la versión 4 (avatar, título, logros destacados) tienen valor por defecto. */
+  function profileFields(p) {
+    const str = (v, n, d) => (typeof v === "string" ? v.slice(0, n) : d);
+    return { name: str(p.name, 40, ""), motto: str(p.motto, 80, ""), avatar_initials: str(p.avatar_initials, 2, ""), avatar_icon: str(p.avatar_icon, 16, "initials"),
+      avatar_frame: str(p.avatar_frame, 16, "simple"), avatar_bg: str(p.avatar_bg, 16, "violet"), avatar_badge: str(p.avatar_badge, 16, "none"),
+      equipped_title: str(p.equipped_title, 64, ""), featured_badges: Array.isArray(p.featured_badges) ? p.featured_badges.filter((x) => typeof x === "string").slice(0, 3) : [] };
   }
   const iso = (v) => { const t = typeof v === "number" ? v : Date.parse(v); return new Date(isNaN(t) ? Date.now() : t).toISOString(); };
   const time = (v) => { const t = Date.parse(v); return isNaN(t) ? 0 : t; };
@@ -85,6 +94,10 @@ const Store = (() => {
       case "purchases": return { id: r.id, item_id: r.item_id, item_type: r.item_type || "reward", item_name: String(r.item_name || ""), item_icon: r.item_icon || "gift",
         item_rarity: r.item_rarity || "common", price: Math.round(+r.price), status: r.status, reason: r.reason || null,
         purchased_at: iso(r.purchased_at), updated_at: iso(r.updated_at) };
+      case "bosses": return { id: r.id, year: +r.year, month: +r.month, name: String(r.name || "").slice(0, 60), description: String(r.description || "").slice(0, 160),
+        boss_type: r.boss_type, category: r.category || null, target_hp: Math.round(+r.target_hp), manual_progress: Math.max(0, Math.round(+r.manual_progress || 0)),
+        coin_reward: Math.round(+r.coin_reward || 0), title_reward: r.title_reward ? String(r.title_reward).slice(0, 40) : null, theme: r.theme || "dragon",
+        claimed_at: isoN(r.claimed_at), created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
       case "chests": return { level: +r.level, name: r.name, gold: +r.gold, claimed_at: iso(r.claimed_at), updated_at: iso(r.updated_at || r.claimed_at) };
     }
     return r;
@@ -98,7 +111,7 @@ const Store = (() => {
         if (!d.objectStoreNames.contains("activities")) d.createObjectStore("activities", { keyPath: "id" });
         if (!d.objectStoreNames.contains("pending")) d.createObjectStore("pending", { keyPath: "id" });
         if (!d.objectStoreNames.contains("meta")) d.createObjectStore("meta", { keyPath: "key" });
-        // Versión 3: solo se agregan almacenes nuevos; nada de lo anterior se toca
+        // Versiones 3 y 4: solo se agregan almacenes nuevos; nada de lo anterior se toca
         for (const t in T) if (!d.objectStoreNames.contains(t)) d.createObjectStore(t, { keyPath: T[t].key });
         if (!d.objectStoreNames.contains("ops")) d.createObjectStore("ops", { keyPath: "key" });
         // Versión 1 guardaba un registro por día: se convierte a una fila por actividad.
@@ -208,10 +221,10 @@ const Store = (() => {
     /* ---- perfil ---- */
     async getProfile() {
       const p = db ? await tx(["meta"], "readonly", (t, set) => req(t.objectStore("meta").get("profile")).then(set)) : mem.meta.get("profile");
-      return { name: (p && p.name) || "", motto: (p && p.motto) || "", updated_at: p && p.updated_at ? iso(p.updated_at) : null };
+      return { ...profileFields(p || {}), updated_at: p && p.updated_at ? iso(p.updated_at) : null };
     },
     async saveProfile(p, remote = false) {
-      const row = { key: "profile", name: p.name || "", motto: p.motto || "", updated_at: iso(p.updated_at || Date.now()) };
+      const row = { key: "profile", ...profileFields(p), updated_at: iso(p.updated_at || Date.now()) };
       if (!db) { mem.meta.set("profile", row); if (!remote) mem.pending.set("profile", { id: "profile", updated_at: row.updated_at }); return; }
       await tx(["meta", "pending"], "readwrite", (t) => {
         t.objectStore("meta").put(row);
@@ -245,9 +258,10 @@ const Store = (() => {
     async markAllPending() {
       const rows = await this.allRows(), prof = await this.getProfile();
       const entries = rows.map((r) => ({ id: r.id, updated_at: r.updated_at }));
-      if (prof.updated_at && (prof.name || prof.motto)) entries.push({ id: "profile", updated_at: prof.updated_at });
+      if (prof.updated_at && (prof.name || prof.motto || prof.avatar_icon !== "initials" || prof.avatar_initials || prof.equipped_title || prof.featured_badges.length)) entries.push({ id: "profile", updated_at: prof.updated_at });
       for (const r of await this.all("items")) entries.push({ id: "item:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("goals")) entries.push({ id: "goal:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("bosses")) entries.push({ id: "boss:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("coins")) if (DERIVED.includes(r.source)) entries.push({ id: "coin:" + r.id, updated_at: r.updated_at });
       if (!db) { for (const e of entries) mem.pending.set(e.id, e); return; }
       await tx(["pending"], "readwrite", (t) => { for (const e of entries) t.objectStore("pending").put(e); });
@@ -266,7 +280,7 @@ const Store = (() => {
       });
     },
 
-    /* ---- Tablas nuevas: coins, items, goals, purchases, chests ---- */
+    /* ---- Tablas nuevas: coins, items, goals, purchases, chests, bosses ---- */
     DERIVED,
     /** Todas las filas de una tabla */
     async all(t) {
@@ -290,12 +304,13 @@ const Store = (() => {
       });
     },
     /** Filas que llegaron de Supabase. Gana el updated_at más reciente; con force, siempre el servidor.
-        Un objetivo reclamado no vuelve atrás. Devuelve cuántas cambiaron. */
+        Un objetivo o un Boss reclamado no vuelve atrás. Devuelve cuántas cambiaron. */
     async applyRemoteT(t, remote, { force = false } = {}) {
       if (!remote.length) return 0;
       const K = T[t].key, P = T[t].prefix;
-      const merge = (l, r) => (t === "goals" && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
-      const wins = (l, r) => !l || force || time(r.updated_at) > time(l.updated_at) || (t === "goals" && r.claimed_at && !l.claimed_at);
+      const sticky = t === "goals" || t === "bosses";
+      const merge = (l, r) => (sticky && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
+      const wins = (l, r) => !l || force || time(r.updated_at) > time(l.updated_at) || (sticky && r.claimed_at && !l.claimed_at);
       const rows = remote.map((r) => cleanT(t, r));
       if (!db) {
         let n = 0;

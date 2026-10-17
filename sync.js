@@ -10,11 +10,14 @@ const Sync = (() => {
   const COLS = "id,date,category,title,minutes,intensity,note,created_at,updated_at,deleted_at,synced_at";
   const RETRY = [5, 15, 60, 300]; // segundos
   const PAGE = 1000, CHUNK = 500;
-  // Tablas nuevas que la app sube: local → Supabase, columna de conflicto
+  // Perfil: nombre, lema y (versión 4) avatar, título equipado y logros destacados
+  const PROF = ["name", "motto", "avatar_initials", "avatar_icon", "avatar_frame", "avatar_bg", "avatar_badge", "equipped_title", "featured_badges"];
+  // Tablas nuevas que la app sube: local → Supabase, columna de conflicto, prefijo en la cola de pendientes
   const PUSH = [
-    ["items", "shop_items", "id"],
-    ["goals", "monthly_goals", "id"],
-    ["coins", "coin_transactions", "user_id,id"],
+    ["items", "shop_items", "id", "item:"],
+    ["goals", "monthly_goals", "id", "goal:"],
+    ["coins", "coin_transactions", "user_id,id", "coin:"],
+    ["bosses", "monthly_bosses", "user_id,id", "boss:"],
   ];
   // Tablas nuevas que se bajan: local, Supabase, columnas, orden secundario
   const PULL = [
@@ -23,6 +26,7 @@ const Sync = (() => {
     ["goals", "monthly_goals", "id,year,month,title,description,goal_type,category,target_value,manual_progress,coin_reward,completed_at,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
     ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
     ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
+    ["bosses", "monthly_bosses", "id,year,month,name,description,boss_type,category,target_hp,manual_progress,coin_reward,title_reward,theme,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
   ];
 
   let sb = null, session = null, linked = null;
@@ -63,7 +67,8 @@ const Sync = (() => {
     }
     if (!linked) {
       const n = (await Store.allRows()).filter((r) => !r.deleted_at).length
-        + (await Store.all("items")).filter((r) => !r.deleted_at).length + (await Store.all("goals")).filter((r) => !r.deleted_at).length;
+        + (await Store.all("items")).filter((r) => !r.deleted_at).length + (await Store.all("goals")).filter((r) => !r.deleted_at).length
+        + (await Store.all("bosses")).filter((r) => !r.deleted_at).length;
       if (n > 0) { uploadCount = n; status = "confirm"; emit(); return; }
       await Store.setMeta("account", id); linked = id;
     }
@@ -81,6 +86,7 @@ const Sync = (() => {
         .on("postgres_changes", { event: "*", schema: "public", table: "purchases", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "monthly_goals", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "level_chests", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "monthly_bosses", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .subscribe();
     } catch (e) { channel = null; }
   }
@@ -123,7 +129,8 @@ const Sync = (() => {
       const profPend = pend.find((p) => p.id === "profile");
       if (profPend) {
         const p = await Store.getProfile();
-        const { error } = await sb.from("profiles").upsert({ user_id: uid(), name: p.name, motto: p.motto, updated_at: p.updated_at }, { onConflict: "user_id", defaultToNull: false });
+        const row = { user_id: uid(), updated_at: p.updated_at }; for (const k of PROF) row[k] = p[k];
+        const { error } = await sb.from("profiles").upsert(row, { onConflict: "user_id", defaultToNull: false });
         if (error) throw error;
         await Store.clearPending([profPend]);
       }
@@ -144,18 +151,18 @@ const Sync = (() => {
         from += PAGE;
       }
       await Store.setMeta("cursor", maxSeen);
-      const { data: prof, error: e3 } = await sb.from("profiles").select("name,motto,updated_at").maybeSingle();
+      const { data: prof, error: e3 } = await sb.from("profiles").select(PROF.join(",") + ",updated_at").maybeSingle();
       if (e3) throw e3;
       if (prof && (await Store.applyRemoteProfile(prof))) changedLocal = true;
 
-      // 4. Tablas nuevas: subir recompensas, objetivos y Oro derivado
-      for (const [t, table, conflict] of PUSH) {
-        const P = t.slice(0, -1) + ":"; // item: goal: coin:
+      // 4. Tablas nuevas: subir recompensas, objetivos, Oro derivado y Bosses
+      for (const [t, table, conflict, P] of PUSH) {
         const mine = pend.filter((p) => p.id.startsWith(P));
         for (let i = 0; i < mine.length; i += CHUNK) {
           const part = mine.slice(i, i + CHUNK);
           let rows = await Store.getT(t, part.map((p) => p.id.slice(P.length)));
           if (t === "coins") rows = rows.filter((r) => Store.DERIVED.includes(r.source)); // el resto lo escribe el servidor
+          if (t === "bosses") rows = rows.map(({ claimed_at, ...r }) => r);                // claimed_at solo lo escribe claim_boss
           if (rows.length) {
             const { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
             if (error) throw error;
@@ -169,6 +176,7 @@ const Sync = (() => {
         if (op.done) continue;
         const call = op.kind === "buy" ? sb.rpc("buy_reward", { p_id: op.id, p_item: op.item_id, p_at: op.at })
           : op.kind === "claim" ? sb.rpc("claim_goal", { p_goal: op.goal_id, p_at: op.at })
+          : op.kind === "boss" ? sb.rpc("claim_boss", { p_boss: op.boss_id, p_at: op.at })
           : sb.rpc("open_chest", { p_level: op.level, p_at: op.at });
         const { data, error } = await call;
         if (error) throw error;
@@ -178,7 +186,7 @@ const Sync = (() => {
           await Store.putOp({ ...op, done: res });
           if (res.startsWith("rejected")) notice({ type: "buy_rejected", reason: res.split(":")[1], op });
         } else {
-          // no_found, not_completed, not_reached, invalid: se deshace lo local
+          // not_found, not_completed, not_defeated, not_reached, invalid: se deshace lo local
           if (op.kind === "buy") {
             const [p] = await Store.getT("purchases", [op.id]);
             if (p) await Store.put("purchases", [{ ...p, status: "rejected", reason: "not_found", updated_at: new Date().toISOString() }], { pending: false });
@@ -217,10 +225,12 @@ const Sync = (() => {
           const purchases = new Map((await Store.all("purchases")).map((p) => [p.id, p]));
           const goals = new Map((await Store.all("goals")).map((g) => [g.id, g]));
           const chests = new Set((await Store.all("chests")).map((c) => c.level));
+          const bosses = new Map((await Store.all("bosses")).map((b) => [b.id, b]));
           const gone = ops.filter((o) =>
             (o.kind === "buy" && purchases.get(o.id) && purchases.get(o.id).status !== "pending") ||
             (o.kind === "claim" && goals.get(o.goal_id) && goals.get(o.goal_id).claimed_at) ||
-            (o.kind === "chest" && chests.has(o.level))).map((o) => o.key);
+            (o.kind === "chest" && chests.has(o.level)) ||
+            (o.kind === "boss" && bosses.get(o.boss_id) && bosses.get(o.boss_id).claimed_at)).map((o) => o.key);
           if (gone.length) { await Store.delOps(gone); changedLocal = true; }
         }
       }
@@ -294,7 +304,7 @@ const Sync = (() => {
     /** Hora actual corregida con la del servidor */
     now: () => new Date(Date.now() + offset).toISOString(),
     onChange: (f) => listeners.add(f),
-    /** Avisos del servidor: compra rechazada, cofre o reclamo que no se pudo confirmar */
+    /** Avisos del servidor: compra rechazada, cofre, objetivo o Boss que no se pudo confirmar */
     onNotice: (f) => noticeFns.add(f),
     get info() {
       return { enabled, signedIn: !!session, email: session && session.user ? session.user.email : "",

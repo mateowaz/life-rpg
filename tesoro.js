@@ -383,7 +383,8 @@ function dlgHTML() {
     inner = `<div class="modal center unlock" role="dialog" aria-modal="true" aria-labelledby="oH"><div class="eyebrow gold-eye">Objetivo completado</div>
     <div class="seal-big">${ico("target")}</div><h2 id="oH">${esc(g.title)}</h2>
     <div class="modal-f" style="justify-content:center">${g.coin_reward ? `<button type="button" class="btn ghost" data-dlg-close>Después</button><button type="button" class="btn gold" data-claim="${g.id}">Reclamar +${nf(g.coin_reward)} Oro</button>` : `<button type="button" class="btn gold" data-dlg-close>Genial</button>`}</div></div>`;
-  }
+  } else inner = extraDlg(d);   // Boss y Perfil (boss.js, personaje.js)
+  if (!inner) return "";
   return `<div class="scrim" id="dlgScrim">${inner}</div>`;
 }
 
