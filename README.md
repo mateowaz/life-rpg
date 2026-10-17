@@ -6,6 +6,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `index.html`: estructura de la página.
 - `styles.css`: diseño.
 - `game.js`: reglas de XP, niveles, rangos, rachas y logros. No guarda nada; todo se recalcula desde las actividades.
+- Categorías: Curso, Finanzas, Físico, Cuidado y Lectura. Finanzas da XP × 1,25 (XP base redondeado × 1,25, redondeado otra vez); las demás × 1. Día completo = 4 categorías distintas.
 - `economy.js`: reglas de Oro, cofres por nivel y objetivos mensuales. No toca XP, niveles ni logros.
 - `tesoro.js`: pantallas de Tienda (Recompensas, Wishlist, Historial), Objetivos y Cofres.
 - `boss.js`: Boss mensual (reglas de daño y estado, pantalla Boss, panel del Dashboard, reclamo y respaldo).
@@ -25,6 +26,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `supabase/003_boss_y_perfil.sql`: Bosses mensuales, `claim_boss` y columnas de avatar, título e insignias en `profiles`. Se ejecuta una vez, después de `002`.
 - `supabase/004_planificador_enfoque.sql`: tablas `planned_activities` y `focus_sessions` y el trigger `protect_focus`. Se ejecuta una vez, después de `003`. Hasta ejecutarlo, la app sigue sincronizando todo lo demás y guarda planificaciones y sesiones solo en el dispositivo.
 - `supabase/005_navegacion_notificaciones.sql`: recordatorio en `planned_activities`, dispositivos, preferencias, avisos y entregas por dispositivo, y las tareas de `pg_cron`. Se ejecuta una vez, después de `004`.
+- `supabase/006_finanzas.sql`: agrega la categoría Finanzas. Revisa la restricción de categoría de 5 tablas conocidas y se detiene con un mensaje si algo no es lo esperado; después las reemplaza, actualiza `cat_name` y hace que cofres y Boss usen `private.activity_xp` (la misma fórmula que la app). Se ejecuta una vez, después de `005`.
 - `supabase/functions/send-push/index.ts`: Edge Function que cifra y entrega los avisos (Web Push). Sus claves son secretos de la función.
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
 

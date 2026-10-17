@@ -2,15 +2,21 @@
    No guarda nada: todo (XP, niveles, rangos, rachas, logros) se recalcula desde los días. */
 /* ============ Reglas del juego ============ */
 const CATS = [
-  {id:"curso",   name:"Curso",   hint:"Estudio, clases, proyectos"},
-  {id:"fisico",  name:"Físico",  hint:"Entreno, deporte, caminatas"},
+  {id:"curso",    name:"Curso",    hint:"Estudio, clases, proyectos"},
+  {id:"finanzas", name:"Finanzas", hint:"Presupuesto, ahorro, inversión", xpMult:1.25},
+  {id:"fisico",   name:"Físico",   hint:"Entreno, deporte, caminatas"},
   {id:"cuidado", name:"Cuidado", hint:"Sueño, meditación, salud"},
   {id:"lectura", name:"Lectura", hint:"Libros, artículos"}
 ];
 const CAT = Object.fromEntries(CATS.map(c=>[c.id,c]));
+// Multiplicador de XP por categoría: se aplica una sola vez, en actXP. Todo lo demás usa el XP final.
+const CATEGORY_XP_MULTIPLIERS = Object.fromEntries(CATS.map(c=>[c.id,c.xpMult||1]));
+const FULL_DAY_CATS = 4;   // día completo = 4 categorías distintas (de las 5)
+const isFullDay = acts=>new Set(acts.map(a=>a.cat)).size>=FULL_DAY_CATS;
 const DIFF = {1:{name:"Ligera",mult:1},2:{name:"Normal",mult:1.5},3:{name:"Intensa",mult:2}};
 const FULL_DAY_BONUS = 50;
-const actXP = (min,diff)=>Math.round((10+Math.min(Math.max(+min||0,0),240))*DIFF[diff].mult);
+// XP base (como siempre, redondeado) × multiplicador de la categoría, redondeado igual
+const actXP = (min,diff,cat)=>Math.round(Math.round((10+Math.min(Math.max(+min||0,0),240))*DIFF[diff].mult)*(CATEGORY_XP_MULTIPLIERS[cat]||1));
 // XP para pasar del nivel L al L+1
 const needG = L=>120+40*(L-1);
 const needC = L=>60+20*(L-1);
@@ -23,7 +29,7 @@ const rankOf = lv=>{let r=RANKS[0];for(const k of RANKS) if(lv>=k.lv) r=k;return
 const nextRank = lv=>RANKS.find(k=>k.lv>lv)||null;
 const ACH=[
   {id:"primer-paso",name:"Primer paso",desc:"Registra tu primera actividad",t:1,m:s=>s.total},
-  {id:"dia-completo",name:"Día completo",desc:"Trabaja las 4 categorías en un mismo día",t:1,m:s=>s.fullDays},
+  {id:"dia-completo",name:"Día completo",desc:"Trabaja 4 categorías distintas en un mismo día",t:1,m:s=>s.fullDays},
   {id:"equilibrista",name:"Equilibrista",desc:"Consigue 7 días completos",t:7,m:s=>s.fullDays},
   {id:"racha-3",name:"Encendido",desc:"Mantén una racha de 3 días",t:3,m:s=>s.bestStreak},
   {id:"racha-7",name:"Semana de hierro",desc:"Mantén una racha de 7 días",t:7,m:s=>s.bestStreak},
@@ -32,13 +38,17 @@ const ACH=[
   {id:"fisico-10",name:"Forjado en acero",desc:"10 actividades de Físico",t:10,m:s=>s.cnt.fisico},
   {id:"cuidado-10",name:"Guardián de sí",desc:"10 actividades de Cuidado",t:10,m:s=>s.cnt.cuidado},
   {id:"lectura-10",name:"Devorador de páginas",desc:"10 actividades de Lectura",t:10,m:s=>s.cnt.lectura},
+  {id:"finanzas-10",name:"Estratega en formación",desc:"10 actividades de Finanzas",t:10,m:s=>s.cnt.finanzas},
   {id:"maraton",name:"Maratón",desc:"Suma 180 minutos en un solo día",t:180,m:s=>s.maxDayMin},
   {id:"xp-1000",name:"Mil de experiencia",desc:"Acumula 1.000 XP",t:1000,m:s=>s.xp},
   {id:"nivel-10",name:"Rango Aventurero",desc:"Alcanza el nivel 10",t:10,m:s=>s.level},
   {id:"constancia",name:"Constancia",desc:"30 días con actividad",t:30,m:s=>s.activeDays},
-  {id:"maestria",name:"Maestría equilibrada",desc:"Las 4 categorías en nivel 5",t:5,m:s=>Math.min(...CATS.map(c=>s.catLv[c.id]))},
+  {id:"maestria",name:"Maestría equilibrada",desc:"4 categorías distintas en nivel 5",t:5,m:s=>topLevels(s.catLv,FULL_DAY_CATS)},
   {id:"xp-10000",name:"Diez mil",desc:"Acumula 10.000 XP",t:10000,m:s=>s.xp}
 ];
+
+// El nivel que alcanzan al menos n categorías (el n-ésimo más alto)
+function topLevels(catLv,n){return CATS.map(c=>catLv[c.id]||1).sort((a,b)=>b-a)[n-1]}
 
 /* ============ Fechas ============ */
 const pad=n=>String(n).padStart(2,"0");
@@ -58,12 +68,13 @@ const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
 function dataDays(){ if(state.demo) return state.demoDays; return state.days }
 function compute(){
   const days=dataDays(), keys=Object.keys(days).filter(k=>days[k].activities.length).sort();
-  const s={total:0,xp:0,cnt:{curso:0,fisico:0,cuidado:0,lectura:0},catXP:{curso:0,fisico:0,cuidado:0,lectura:0},catMin:{curso:0,fisico:0,cuidado:0,lectura:0},fullDays:0,bestStreak:0,activeDays:0,maxDayMin:0,level:1,catLv:{},minutes:0};
+  const zero=()=>Object.fromEntries(CATS.map(c=>[c.id,0]));
+  const s={total:0,xp:0,cnt:zero(),catXP:zero(),catMin:zero(),fullDays:0,bestStreak:0,activeDays:0,maxDayMin:0,level:1,catLv:{},minutes:0};
   const unlocked={}, perDay={}; let run=0, prev=null;
   for(const k of keys){
     const acts=days[k].activities; const cats=new Set(); let dxp=0,dmin=0;
     for(const a of acts){s.total++;s.cnt[a.cat]++;s.catXP[a.cat]+=a.xp;s.catMin[a.cat]+=a.min;dxp+=a.xp;dmin+=a.min;cats.add(a.cat)}
-    const full=cats.size===4; if(full){s.fullDays++;dxp+=FULL_DAY_BONUS}
+    const full=cats.size>=FULL_DAY_CATS; if(full){s.fullDays++;dxp+=FULL_DAY_BONUS}
     s.xp+=dxp; s.minutes+=dmin; s.activeDays++; s.maxDayMin=Math.max(s.maxDayMin,dmin);
     run=(prev&&addDays(prev,1)===k)?run+1:1; prev=k; s.bestStreak=Math.max(s.bestStreak,run);
     s.level=levelOf(s.xp,needG).level; for(const c of CATS) s.catLv[c.id]=levelOf(s.catXP[c.id],needC).level;

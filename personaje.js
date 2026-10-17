@@ -11,9 +11,10 @@ const TITLE_RULES = [
   { id: "guerrero", name: "Guerrero", how: "Lleva Físico al nivel 20", p: (s) => [s.catLv.fisico, 20], lbl: "Físico nivel" },
   { id: "mente-serena", name: "Mente Serena", how: "Lleva Cuidado al nivel 20", p: (s) => [s.catLv.cuidado, 20], lbl: "Cuidado nivel" },
   { id: "lector-voraz", name: "Lector Voraz", how: "Lleva Lectura al nivel 20", p: (s) => [s.catLv.lectura, 20], lbl: "Lectura nivel" },
+  { id: "estratega", name: "Estratega", how: "Lleva Finanzas al nivel 20", p: (s) => [s.catLv.finanzas, 20], lbl: "Finanzas nivel" },
   { id: "cazador", name: "Cazador de Dragones", how: "Reclama 3 Bosses", p: (s, c) => [c.bosses, 3], lbl: "Bosses" },
   { id: "veterano", name: "Veterano del Tiempo", how: "Registra actividad en 365 días", p: (s) => [s.activeDays, 365], lbl: "Días activos" },
-  { id: "maestro", name: "Maestro Integral", how: "Lleva las 4 categorías al nivel 20", p: (s) => [Math.min(...CATS.map((c) => s.catLv[c.id])), 20], lbl: "Nivel más bajo" },
+  { id: "maestro", name: "Maestro Integral", how: "Lleva 4 categorías distintas al nivel 20", p: (s) => [topLevels(s.catLv, FULL_DAY_CATS), 20], lbl: "4.ª categoría" },
 ];
 const DEFAULT_TITLE = "rule:aspirante";
 /** Bosses reclamados (incluye los reclamos que esperan confirmación) */

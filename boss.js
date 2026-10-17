@@ -65,7 +65,7 @@ function bossHits(b, days) {
       if (b.category && a.cat !== b.category) continue;
       out.push({ k, ts: a.ts, title: a.title, cat: a.cat, v: b.boss_type.endsWith("xp") ? a.xp : b.boss_type.endsWith("minutes") ? a.min : 1 });
     }
-    if (b.boss_type === "xp" && new Set(acts.map((a) => a.cat)).size === 4)
+    if (b.boss_type === "xp" && isFullDay(acts))
       out.push({ k, ts: Math.max(...acts.map((a) => a.ts)) + 1, title: "Día completo", cat: null, v: FULL_DAY_BONUS });
   }
   return out.sort((x, y) => y.k.localeCompare(x.k) || y.ts - x.ts);
@@ -223,7 +223,7 @@ function bossForm() {
   <div class="field"><label for="bDesc">Descripción (opcional)</label><input class="inp" id="bDesc" maxlength="160" placeholder="Ej.: Se alimenta de cada “mañana lo hago”" value="${esc(f.description)}"></div>
   <div class="row2"><div class="field"><label for="bMonth">Mes</label><select class="inp" id="bMonth" ${dis}>${bossMonths({ y: f.y, m: f.m }).map((x) => `<option value="${x.y}-${x.m}" ${x.y === f.y && x.m === f.m ? "selected" : ""}>${cap(monthName(x.y, x.m))}</option>`).join("")}</select></div>
   <div class="field"><label for="bType">Tipo de daño</label><select class="inp" id="bType" ${dis}>${Object.entries(BOSS_TYPES).map(([k, v]) => `<option value="${k}" ${k === f.boss_type ? "selected" : ""}>${v.name}</option>`).join("")}</select></div></div>
-  ${T.cat ? `<div class="field"><label>Categoría</label><div class="seg">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-bcat="${c.id}" aria-pressed="${f.category === c.id}" ${dis}>${ico(c.id)}${c.name}</button>`).join("")}</div></div>` : ""}
+  ${T.cat ? `<div class="field"><label>Categoría</label><div class="seg cat5">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-bcat="${c.id}" aria-pressed="${f.category === c.id}" ${dis}>${ico(c.id)}${c.name}</button>`).join("")}</div></div>` : ""}
   <div class="row2"><div class="field"><label for="bHp">HP (${T.unit})</label><input class="inp num" id="bHp" type="number" min="1" max="1000000" step="1" value="${esc(f.hp)}" ${dis}></div>
   <div class="field"><label for="bReward">Recompensa (Oro)</label><input class="inp num" id="bReward" type="number" min="0" max="10000" step="1" value="${esc(f.reward)}" ${dis}></div></div>
   <div class="field"><label for="bTitle">Título de recompensa (opcional)</label><input class="inp" id="bTitle" maxlength="40" placeholder="Ej.: Cazador de Dragones" value="${esc(f.title)}" ${dis}></div>

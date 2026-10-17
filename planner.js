@@ -200,7 +200,7 @@ function planForm() {
   const f = dlg.f, T = todayKey();
   return `<form class="modal" id="planForm" role="dialog" aria-modal="true" aria-labelledby="plH">
   <div><div class="eyebrow">Planificador · no da XP hasta completarla</div><h2 id="plH">${dlg.id ? "Editar planificación" : "Nueva planificación"}</h2></div>
-  <div class="field"><label>Categoría</label><div class="seg">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-plcat="${c.id}" aria-pressed="${f.cat === c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div></div>
+  <div class="field"><label>Categoría</label><div class="seg cat5">${CATS.map((c) => `<button type="button" class="c-${c.id}" data-plcat="${c.id}" aria-pressed="${f.cat === c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div></div>
   <div class="field"><label for="plTitle">¿Qué piensas hacer?</label><input class="inp" id="plTitle" maxlength="80" placeholder="Ej.: Matemática, capítulo 3" value="${esc(f.title)}"></div>
   <div class="row2"><div class="field"><label for="plDate">Fecha</label><input class="inp" id="plDate" type="date" min="${dlg.origDate && dlg.origDate < T ? dlg.origDate : T}" value="${f.date}"></div>
   <div class="field"><label for="plTime">Hora (opcional)</label><input class="inp num" id="plTime" type="time" value="${esc(f.time)}"></div></div>
@@ -291,7 +291,7 @@ function planCompleteForm() {
   <div class="field"><label>Fecha real</label>${p.date < T ? `<div class="seg two">${[[T, "Hoy"], [p.date, fmtShort(p.date)]].map(([k, l]) => `<button type="button" data-pcdate="${k}" aria-pressed="${f.date === k}">${l}</button>`).join("")}</div>` : `<div class="inp static">Hoy</div>`}</div></div>
   <div class="field"><label>Intensidad real</label><div class="seg three">${[1, 2, 3].map((d) => `<button type="button" data-pcdiff="${d}" aria-pressed="${+f.diff === d}">${DIFF[d].name}<small>×${String(DIFF[d].mult).replace(".", ",")}</small></button>`).join("")}</div></div>
   <div class="field"><label for="pcNote">Nota (opcional)</label><input class="inp" id="pcNote" maxlength="120" value="${esc(f.note)}"></div>
-  <div class="preview"><span>Ganarás</span><b class="num" id="pcXP">+${min >= 1 && min <= 240 ? actXP(min, +f.diff) : 0} XP</b></div>
+  <div class="preview"><span>Ganarás</span><b class="num" id="pcXP">+${min >= 1 && min <= 240 ? actXP(min, +f.diff, p.category) : 0} XP</b></div>
   ${dlg.err ? `<div class="err">${dlg.err}</div>` : ""}
   <div class="modal-f"><button type="button" class="btn ghost" data-dlg-close>Cancelar</button><button type="submit" class="btn primary">Completar</button></div></form>`;
 }
@@ -306,7 +306,7 @@ function completePlan() {
   if (planAct(p)) { toast("Esta planificación ya está completada."); render(); return; }   // doble toque
   focusFinishPlan(p.id);                                                                 // cierra la sesión en curso, si hay
   state.planMenu = null;
-  addActivity(date, { cat: p.category, title: p.title, min, diff: +f.diff, xp: actXP(min, +f.diff), note: f.note.trim().slice(0, 120) }, p.id);
+  addActivity(date, { cat: p.category, title: p.title, min, diff: +f.diff, xp: actXP(min, +f.diff, p.category), note: f.note.trim().slice(0, 120) }, p.id);
 }
 
 /* ============ Respaldo (versión 5) ============ */
@@ -413,7 +413,7 @@ document.addEventListener("input", (e) => {
   }
   if (e.target.id === "pcMin" && dlg && dlg.type === "planComplete") {
     const m = Math.round(+e.target.value), x = document.getElementById("pcXP");
-    if (x) x.textContent = `+${m >= 1 && m <= 240 ? actXP(m, +dlg.f.diff) : 0} XP`;
+    if (x) x.textContent = `+${m >= 1 && m <= 240 ? actXP(m, +dlg.f.diff, state.plans.get(dlg.id)?.category) : 0} XP`;
   }
 });
 document.addEventListener("submit", (e) => {
