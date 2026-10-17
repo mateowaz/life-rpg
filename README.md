@@ -4,19 +4,25 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 
 ## Archivos
 - `index.html`: estructura de la página.
-- `styles.css`: diseño (igual que la versión de Claude).
+- `styles.css`: diseño.
 - `game.js`: reglas de XP, niveles, rangos, rachas y logros. No guarda nada; todo se recalcula desde las actividades.
-- `storage.js`: única capa de guardado (`Store`). Aquí se agrega la sincronización futura.
-- `app.js`: vistas, formulario, respaldo e instalación.
+- `storage.js`: copia local en IndexedDB (una fila por actividad + cola de pendientes). La app solo lee y escribe aquí.
+- `sync.js`: inicio de sesión (email y contraseña) y sincronización con Supabase: sube pendientes, baja cambios, Realtime y reintentos.
+- `config.js`: URL del proyecto y **Publishable Key**. Nunca la service_role ni una secret key.
+- `app.js`: vistas, formulario (agregar y editar), cuenta, respaldo e instalación.
 - `sw.js`: modo offline. **Sube `VERSION` en cada publicación.**
+- `vendor/supabase-2.117.2.js`: cliente de Supabase guardado en el repositorio para que funcione sin internet (licencia MIT).
+- `supabase/schema.sql`: tablas, reglas RLS y trigger de "gana la versión más reciente".
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
 
+## Sincronización
+- Offline-first: todo se guarda primero en el dispositivo; la cola se sube sola al volver la conexión.
+- Si Supabase está pausado o caído, la app sigue funcionando y reintenta (5 s, 15 s, 1 min, luego cada 5 min).
+- Conflictos: gana el `updated_at` más reciente, actividad por actividad. Borrar = `deleted_at`, nunca se borra la fila.
+- Se baja lo nuevo según `synced_at` (hora del servidor), con 2 minutos de margen.
+
 ## Publicar en GitHub Pages
-Subir esta carpeta a la raíz del repositorio y activar Pages (Settings → Pages → rama `main`, carpeta `/`).
+Rama `main`, carpeta `/` (Settings → Pages).
 
-## Pasar datos desde la versión de Claude
-Perfil → Datos y respaldo → Exportar datos en la versión de Claude, e Importar datos en la PWA. Mismo formato JSON.
-
-## Sincronización futura (PC ↔ celular)
-`storage.js` ya registra qué días cambiaron (`outbox`), qué actividades se borraron (`tombstones`) y un id por dispositivo.
-Para sincronizar, agregar un servicio remoto (por ejemplo Supabase) que envíe esos cambios, traiga los remotos y combine por id de actividad.
+## Respaldo
+Perfil → Datos y respaldo. Exporta la versión 2 (con `created_at`, `updated_at`, `deleted_at`) e importa respaldos de la versión 1 y 2.
