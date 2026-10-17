@@ -13,8 +13,8 @@ function makeDemo(){
 }
 
 /* ============ Estado y guardado ============ */
-const state={days:{},rows:new Map(),profile:{name:"",motto:"",updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
-  eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null};
+const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:"",avatar_icon:"initials",avatar_frame:"simple",avatar_bg:"violet",avatar_badge:"none",equipped_title:"",featured_badges:[],updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
+  eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -28,9 +28,10 @@ const App=window.App={
   async reload(){
     try{const rows=await Store.allRows();state.rows=new Map(rows.map(r=>[r.id,r]));state.profile=await Store.getProfile()}catch(e){}
     try{
-      const [coins,items,purchases,goals,chests,ops]=await Promise.all(["coins","items","purchases","goals","chests"].map(t=>Store.all(t)).concat(Store.ops()));
+      const [coins,items,purchases,goals,chests,bosses,ops]=await Promise.all(["coins","items","purchases","goals","chests","bosses"].map(t=>Store.all(t)).concat(Store.ops()));
       const byId=a=>new Map(a.map(r=>[r.id,r]));
-      state.eco={coins:byId(coins),items:byId(items),purchases:byId(purchases),goals:byId(goals),chests:new Map(chests.map(c=>[c.level,c])),ops};
+      state.eco={coins:byId(coins),items:byId(items),purchases:byId(purchases),goals:byId(goals),chests:new Map(chests.map(c=>[c.level,c])),bosses:byId(bosses),ops};
+      if(!state.bossSeen) state.bossSeen=new Set((await Store.getMeta("bossSeen"))||[]);
     }catch(e){}
     rebuildDays(); syncEconomy(false); render();
   }
@@ -59,8 +60,9 @@ function saveProfile(){
 }
 
 /* ============ Acciones ============ */
+function bossHP(){const c=curMonth(),b=state.demo?null:bossFor(c.y,c.m);return b?{b,left:bossInfo(b).left}:null}
 function addActivity(k,a){
-  const before=compute(), g0=goldState(state.eco).balance;
+  const before=compute(), g0=goldState(state.eco).balance, hp0=bossHP();
   if(state.demo){state.demo=false}
   const at=nowISO();
   commitRows([{id:Store.newId(),date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",created_at:at,updated_at:at,deleted_at:null}]);
@@ -68,6 +70,7 @@ function addActivity(k,a){
   toast(`<b>+${a.xp} XP</b> · ${CAT[a.cat].name}`);
   goldToast(goldState(state.eco).balance-g0);
   if(after.perDay[k]?.full && !before.perDay[k]?.full) toast(`<b>Día completo</b> · +${FULL_DAY_BONUS} XP de bonus`);
+  const hp1=hp0&&bossHP(); if(hp1&&hp1.b.id===hp0.b.id&&hp1.left<hp0.left) toast(`<b>−${nf(hp0.left-hp1.left)} HP</b> · ${esc(hp1.b.name)}`);
   if(after.G.level>before.G.level) toast(`<b>¡Nivel ${after.G.level}!</b> ${after.rank.name!==before.rank.name?"Nuevo rango: "+after.rank.name:""}`,"lvl");
   for(const c of CHESTS) if(c.level>before.G.level&&c.level<=after.G.level&&!state.eco.chests.has(c.level)) toast(`<b>Cofre desbloqueado</b> · ${c.name}`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) toast(`Logro desbloqueado: <b>${ACH.find(x=>x.id===id).name}</b>`,"lvl");
@@ -136,7 +139,7 @@ function goals(s){
 function totalXPFor(lv){let t=0;for(let L=1;L<lv;L++)t+=needG(L);return t}
 
 /* ============ Vistas ============ */
-const NAV=[["dashboard","Dashboard","dash","Inicio"],["hoy","Hoy","hoy","Hoy"],["objetivos","Objetivos","target","Metas"],["historial","Historial","hist","Historial"],["logros","Logros","logros","Logros"],["tienda","Tienda","shop","Tienda"],["estadisticas","Estadísticas","stats","Estad."],["perfil","Perfil","perfil","Perfil"]];
+const NAV=[["dashboard","Dashboard","dash","Inicio"],["hoy","Hoy","hoy","Hoy"],["objetivos","Objetivos","target","Metas"],["boss","Boss","boss","Boss"],["historial","Historial","hist","Historial"],["logros","Logros","logros","Logros"],["tienda","Tienda","shop","Tienda"],["estadisticas","Estadísticas","stats","Estad."],["perfil","Perfil","perfil","Perfil"]];
 function header(title,sub,btn=true){
   return `<div class="mob-head"><svg class="brand-mark" viewBox="0 0 40 40"><path d="M20 2l15 7v11c0 9-6.5 15.5-15 18C11.5 35.5 5 29 5 20V9z" fill="none" stroke="url(#g-gold)" stroke-width="2"/><path d="M20 9l3 7h7l-5.5 4.5 2 7.5L20 23.5 13.5 28l2-7.5L10 16h7z" fill="url(#g-vio)"/></svg><b>LIFE RPG</b></div>
   <div class="top"><div><h1>${title}</h1>${sub?`<p>${sub}</p>`:""}</div>${btn?`<button class="btn primary" data-add="${todayKey()}">${ico("plus")} Agregar actividad</button>`:""}</div>`+
@@ -170,7 +173,7 @@ function vDashboard(s){
   <div class="grid2">
     <section class="panel"><div class="panel-h"><h2>Actividades de hoy</h2><button class="link" data-go="hoy">Ver día</button></div>${dayList(T,s)}</section>
     <div class="col">
-      ${dashChest(s)}${dashSaving()}${dashMonthGoals()}
+      ${dashBoss()}${dashChest(s)}${dashSaving()}${dashMonthGoals()}
       <section class="panel"><div class="panel-h"><h2>Próximos objetivos</h2></div>${goals(s)}</section>
       <section class="panel"><div class="panel-h"><h2>Logros recientes</h2><button class="link" data-go="logros">Ver todos</button></div>
       ${recent.length?`<div class="ach-list">${recent.map(([id,k])=>{const a=ACH.find(x=>x.id===id);return `<div class="ach"><div class="medal">${medal(true)}</div><div><b>${a.name}</b><span>${fmtShort(k)} · ${a.desc}</span></div></div>`}).join("")}</div>`:`<div class="empty" style="padding:10px">Tu primer logro llega con tu primera actividad.</div>`}
@@ -235,12 +238,11 @@ function vStats(s){
 }
 
 function vPerfil(s){
-  return header("Perfil","Tu personaje y las reglas del juego.",false)+`
+  return header("Perfil","Tu personaje y las reglas del juego.",false)+perfilTop(s)+`
   <div class="grid2"><div class="col">
-  <section class="panel"><div class="panel-h"><h2>Personaje</h2><span class="chip gold">Nivel ${s.G.level} · ${s.rank.name}</span></div>
+  <section class="panel"><div class="panel-h"><h2>Nombre y lema</h2><span class="chip gold">Nivel ${s.G.level} · ${s.rank.name}</span></div>
   <div style="display:flex;flex-direction:column;gap:14px"><div class="field"><label for="pName">Nombre</label><input class="inp" id="pName" maxlength="40" placeholder="Cómo quieres que te llame la app" value="${esc(state.profile.name||"")}"></div>
-  <div class="field"><label for="pMotto">Lema</label><input class="inp" id="pMotto" maxlength="80" placeholder="Ej.: Un poco cada día" value="${esc(state.profile.motto||"")}"></div>
-  <div class="hbars">${CATS.map(c=>{const L=levelOf(s.catXP[c.id],needC);return `<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${L.pct*100}%;background:var(--c-${c.id})"></i></div><span class="v num">Nv ${L.level}</span></div>`}).join("")}</div></div></section>
+  <div class="field"><label for="pMotto">Lema</label><input class="inp" id="pMotto" maxlength="80" placeholder="Ej.: Un poco cada día" value="${esc(state.profile.motto||"")}"></div></div></section>
   ${treasurePanel(s)}
   <section class="panel"><div class="panel-h"><h2>Cómo se gana XP</h2></div>
   <table class="rules"><tr><th>Regla</th><th>XP</th></tr>
@@ -255,7 +257,7 @@ function vPerfil(s){
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
+  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
   <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
   </div></div>`;
@@ -338,7 +340,7 @@ function backupPanel(){
   const P=bk.pending;
   if(P){
     const cur=Object.keys(state.days).length;
-    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}</span></div>
+    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}${P.bosses.length?` · ${P.bosses.length} Bosses`:""}</span></div>
     <b>${P.first?`Del ${fmtLong(P.first)} al ${fmtLong(P.last)}`:"Sin actividades"}</b>
     <span style="font-size:13px;color:var(--muted)">${P.profile.name?`Personaje: ${esc(P.profile.name)}. `:""}${P.skipped?`Se omitirán ${P.skipped} registros inválidos. `:""}${cur?`Ahora tienes ${cur} días guardados. <b style="color:var(--fg)">Combinar</b> suma lo del archivo sin borrar nada. <b style="color:var(--fg)">Reemplazar</b> deja solo lo del archivo.`:"No tienes datos guardados, así que se cargará todo el archivo."}</span>
     ${bk.replaceAsk?`<div class="confirm" style="flex-wrap:wrap;margin-top:4px">Se borrarán tus ${cur} días actuales y quedará solo el archivo. ¿Seguro? <button class="btn sm danger" id="impReplaceYes">Sí, reemplazar</button><button class="btn sm ghost" id="impReplaceNo">Volver</button></div>`
@@ -350,7 +352,9 @@ function exportJSON(){
   const rows=[...state.rows.values()].filter(r=>!r.deleted_at).sort((x,y)=>x.date.localeCompare(y.date)||x.created_at.localeCompare(y.created_at));
   // "days" repite lo mismo en el formato viejo, para que también lo lea la versión de Claude
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
-  return JSON.stringify({app:"life-rpg",version:3,exportedAt:new Date().toISOString(),profile:{name:state.profile.name||"",motto:state.profile.motto||"",updated_at:state.profile.updated_at},activities:rows,days,...ecoExport()},null,2);
+  const P=state.profile, profile={name:P.name||"",motto:P.motto||"",updated_at:P.updated_at};
+  for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) profile[k]=P[k];
+  return JSON.stringify({app:"life-rpg",version:4,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport()},null,2);
 }
 /** Oro, tienda, objetivos y cofres. Lo que espera al servidor se exporta como ya hecho, igual que se ve en pantalla. */
 function ecoExport(){
@@ -399,9 +403,9 @@ function parseBackup(text){
     }
   }
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
-  const pr=j.profile||{}, eco=parseEco(j);
-  skipped+=eco.skipped;
-  return {rows,...eco,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null}};
+  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j);
+  skipped+=eco.skipped+bs.skipped;
+  return {rows,...eco,bosses:bs.bosses,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
 }
 /* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
 const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -489,12 +493,17 @@ function applyImport(mode){
   let profChanged=false;
   if(mode==="replace"||!state.profile.name){ if(P.profile.name){state.profile.name=P.profile.name;profChanged=true} }
   if(mode==="replace"||!state.profile.motto){ if(P.profile.motto){state.profile.motto=P.profile.motto;profChanged=true} }
+  // Avatar, título e insignias (respaldo versión 4): al combinar, solo si los del archivo son más nuevos
+  if(P.profile.hasAvatar&&(mode==="replace"||!state.profile.updated_at||Date.parse(P.profile.updated_at)>Date.parse(state.profile.updated_at))){
+    for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) state.profile[k]=P.profile[k]; profChanged=true;
+  }
   if(profChanged) saveProfile();
+  const bossRes=importBosses(P,mode,at);
   const eco=importEco(P,mode,at);
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
-  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`].filter(Boolean);
+  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`].filter(Boolean);
   if(ex.length) toast(`También se importaron ${ex.join(", ")}.`);
   if(eco.skippedBuys) toast(`${eco.skippedBuys} compra${eco.skippedBuys===1?"":"s"} del archivo no se repitió: la recompensa ya no está activa o no alcanza el Oro.`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) {toast(`Logros actualizados según tu historial.`);break}
@@ -505,7 +514,7 @@ document.addEventListener("change",e=>{
   const f=e.target.files[0]; e.target.value="";
   if(f.size>20*1024*1024){bk.err="El archivo es demasiado grande para ser un respaldo.";render();return}
   const r=new FileReader();
-  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
+  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length&&!P.bosses.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
   r.onerror=()=>{bk.err="No se pudo leer el archivo.";render()};
   r.readAsText(f);
 });
@@ -602,12 +611,13 @@ function render(){
   if(!Object.keys(state.days).length && !form){ if(!state.demoDays) state.demoDays=makeDemo(); state.demo=true } else state.demo=false;
   const s=compute();
   document.getElementById("nav").innerHTML=NAV.map(([id,label,icon,short])=>`<a href="#${id}" data-go="${id}" class="${state.route===id?"on":""}" ${state.route===id?'aria-current="page"':""}>${ico(icon)}<span class="nl">${label}</span><span class="ns">${short}</span></a>`).join("");
-  const v={dashboard:vDashboard,hoy:vHoy,objetivos:vObjetivos,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
+  const v={dashboard:vDashboard,hoy:vHoy,objetivos:vObjetivos,boss:vBoss,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
   const keepFocus=document.activeElement&&document.activeElement.id; const caret=document.activeElement?.selectionStart;
   document.getElementById("view").innerHTML=v(s);
   if(keepFocus&&(keepFocus==="pName"||keepFocus==="pMotto"||keepFocus==="accEmail")){const el=document.getElementById(keepFocus);if(el){el.focus();try{el.setSelectionRange(caret,caret)}catch(e){}}}
   const pill=document.getElementById("savePill");pill.className="save-pill"+(state.mode==="device"&&Sync.info.status!=="error"?" ok":"");pill.lastElementChild.textContent=state.mode==="device"?(Sync.info.signedIn?Sync.label():(navigator.onLine?"Guardado en este dispositivo":"Sin conexión · guardado aquí")):"Sin guardado disponible";
   document.getElementById("sideDate").textContent=cap(fromKey(todayKey()).toLocaleDateString("es",{weekday:"long",day:"numeric",month:"long"}));
+  bossAfterRender();
 }
 document.getElementById("nav").addEventListener("click",e=>{const a=e.target.closest("a[data-go]");if(a){e.preventDefault();go(a.dataset.go)}});
 const h=(location.hash||"").slice(1); if(NAV.some(n=>n[0]===h)) state.route=h;
