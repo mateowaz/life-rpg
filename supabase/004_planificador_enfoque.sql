@@ -142,15 +142,32 @@ begin
     end if;
   end if;
 
+  -- Horas futuras: nada puede pasar de ahora + 1 hora (margen para relojes adelantados)
+  if new.started_at > limit_to then new.started_at := limit_to; end if;            -- solo al crear (al editar se mantiene el original)
+  if new.ended_at is not null and new.ended_at > limit_to then new.ended_at := limit_to; end if;
+  if new.ended_at is not null and new.ended_at < new.started_at then new.ended_at := new.started_at; end if;
+  if new.segment_started_at is not null and (new.segment_started_at > limit_to or new.segment_started_at < new.started_at) then
+    new.segment_started_at := null;
+  end if;
+
+  -- Tramo abierto = enfoque corriendo. Igual que en la app: en pausa, en descanso o esperando
+  -- el próximo enfoque del Pomodoro no hay tramo abierto, así ese rato nunca cuenta como enfoque.
+  if new.status = 'paused'
+     or (tg_op = 'UPDATE' and old.status = 'paused' and new.status in ('finished', 'discarded'))   -- terminar desde la pausa
+     or (new.mode = 'pomodoro' and coalesce(new.pomodoro->>'phase', '') <> 'focus') then
+    new.segment_started_at := null;
+  end if;
+
   -- Al terminar, el tramo abierto se cierra en el servidor si el dispositivo no lo cerró
+  -- (en Pomodoro, como mucho hasta el final de ese enfoque)
   if new.status in ('finished', 'discarded') then
-    if new.ended_at is null then new.ended_at := least(now(), limit_to); end if;
+    if new.ended_at is null then new.ended_at := greatest(least(now(), limit_to), new.started_at); end if;
     if new.segment_started_at is not null then
-      new.segments := new.segments || jsonb_build_array(jsonb_build_array(new.segment_started_at, new.ended_at));
+      new.segments := new.segments || jsonb_build_array(jsonb_build_array(new.segment_started_at,
+        least(new.ended_at, coalesce(private.ts(new.pomodoro->>'ends_at'), new.ended_at))));
     end if;
     new.segment_started_at := null;
   end if;
-  if new.ended_at is not null and new.ended_at < new.started_at then new.ended_at := new.started_at; end if;
 
   new.segments := private.clean_segments(new.segments, new.started_at, coalesce(new.ended_at, limit_to));
   new.focus_seconds := private.segment_seconds(new.segments);

@@ -20,9 +20,14 @@ const mine = (f) => f.device_id === state.device;
 const myActive = () => liveFocus().filter((f) => fActive(f) && mine(f)).sort((a, b) => b.started_at.localeCompare(a.started_at))[0] || null;
 const fActiveFor = (planId) => liveFocus().find((f) => fActive(f) && f.planned_activity_id === planId) || null;
 
-function cleanSegs(list) {
-  return list.filter((x) => Array.isArray(x) && x.length === 2 && !isNaN(tms(x[0])) && !isNaN(tms(x[1])) && tms(x[0]) < tms(x[1]))
-    .map(([a, b]) => [new Date(a).toISOString(), new Date(b).toISOString()]).sort((x, y) => x[0].localeCompare(y[0]));
+/** Tramos válidos, igual que en el servidor (private.clean_segments): inicio < fin, dentro de [lo, hi],
+    ordenados y sin superposición (lo que se repite se une, así nunca se infla el tiempo). */
+function cleanSegs(list, lo = -Infinity, hi = Infinity) {
+  const s = (Array.isArray(list) ? list : []).filter((x) => Array.isArray(x) && x.length === 2)
+    .map(([a, b]) => [Math.max(tms(a), lo), Math.min(tms(b), hi)]).filter(([a, b]) => !isNaN(a) && !isNaN(b) && a < b).sort((x, y) => x[0] - y[0]);
+  const out = [];
+  for (const [a, b] of s) { const l = out[out.length - 1]; if (l && a <= l[1]) l[1] = Math.max(l[1], b); else out.push([a, b]); }
+  return out.map(([a, b]) => [new Date(a).toISOString(), new Date(b).toISOString()]);
 }
 const segSecs = (segs) => segs.reduce((t, [a, b]) => t + Math.max(0, (tms(b) - tms(a)) / 1000), 0);
 /** Segundos cubiertos por varios tramos, contando una sola vez lo que se superpone */
@@ -35,9 +40,18 @@ function unionSecs(segs) {
 }
 /** Tramos de una sesión, incluido el que está corriendo (hasta ahora) */
 function liveSegs(f, now = fnow()) {
-  const s = f.segments.slice();
-  if (f.status === "running" && f.segment_started_at && now > tms(f.segment_started_at)) s.push([f.segment_started_at, new Date(now).toISOString()]);
+  const s = f.segments.slice(), st = openStart(f);
+  if (st !== null && f.status === "running") {
+    const end = f.pomodoro && f.pomodoro.ends_at ? Math.min(now, tms(f.pomodoro.ends_at)) : now;   // en Pomodoro, solo hasta el final del enfoque
+    if (end > st) s.push([new Date(st).toISOString(), new Date(end).toISOString()]);
+  }
   return s;
+}
+/** Inicio del tramo abierto, o null. Como en el servidor: en pausa o fuera de la fase de enfoque del Pomodoro no hay tramo abierto. */
+function openStart(f) {
+  if (!f.segment_started_at || f.status === "paused" || (f.mode === "pomodoro" && (!f.pomodoro || f.pomodoro.phase !== "focus"))) return null;
+  const t = tms(f.segment_started_at);
+  return isNaN(t) || t < tms(f.started_at) ? null : t;
 }
 const fSecs = (f, now) => segSecs(liveSegs(f, now));
 function pomoClean(p) {
@@ -103,7 +117,9 @@ function focusNew({ plan, title, cat, mode, pomo }) {
 function fPause(f0) {
   const now = fnow(), f = pomoAdvance(f0, now).f; if (f.status !== "running") return f;
   const x = { ...f, segments: f.segments.slice(), status: "paused", updated_at: stamp(f0, now) };
-  if (x.segment_started_at) { if (now > tms(x.segment_started_at)) x.segments.push([x.segment_started_at, new Date(now).toISOString()]); x.segment_started_at = null; }
+  const st = openStart(f);
+  if (st !== null && now > st) x.segments.push([new Date(st).toISOString(), new Date(now).toISOString()]);
+  x.segment_started_at = null;
   if (x.pomodoro) x.pomodoro = { ...x.pomodoro, left: Math.max(0, Math.round((tms(x.pomodoro.ends_at) - now) / 1000)), ends_at: null };
   return x;
 }
@@ -127,8 +143,10 @@ function fSkipBreak(f0) {
 function fFinish(f0, status = "finished", endAt) {
   const now = fnow(), f = pomoAdvance(f0, now).f, end = Math.min(now, endAt || now);
   const x = { ...f, segments: f.segments.slice(), status, ended_at: new Date(end).toISOString(), updated_at: stamp(f0, now) };
-  if (x.segment_started_at) { if (end > tms(x.segment_started_at)) x.segments.push([x.segment_started_at, x.ended_at]); x.segment_started_at = null; }
-  x.segments = cleanSegs(x.segments); x.focus_seconds = Math.round(segSecs(x.segments));
+  const st = openStart(f);
+  if (st !== null && end > st) x.segments.push([new Date(st).toISOString(), x.ended_at]);
+  x.segment_started_at = null;
+  x.segments = cleanSegs(x.segments, tms(x.started_at), end); x.focus_seconds = Math.round(segSecs(x.segments));
   if (x.pomodoro) x.pomodoro = { ...x.pomodoro, ends_at: null };
   return x;
 }

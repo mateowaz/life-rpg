@@ -312,11 +312,13 @@ function parsePlans(j) {
   for (const r of arr(j.focus_sessions)) {
     if (!r || !UUIDre.test(r.id) || (r.planned_activity_id && !UUIDre.test(r.planned_activity_id)) || typeof r.title !== "string" || !r.title.trim() || !CAT[r.category]
       || !["free", "pomodoro"].includes(r.mode) || !["running", "paused", "finished", "discarded"].includes(r.status) || isNaN(Date.parse(r.started_at))) { skipped++; continue; }
-    const segs = cleanSegs(arr(r.segments));
+    const lim = fnow() + 3600000, st = Math.min(Date.parse(r.started_at), lim);              // horas futuras: como en el servidor
+    const en = isNaN(Date.parse(r.ended_at)) ? null : Math.max(st, Math.min(Date.parse(r.ended_at), lim));
+    const segs = cleanSegs(arr(r.segments), st, en === null ? lim : en);
     const c = isoOr(r.created_at, isoOr(r.started_at, nowISO()));
     focus.push({ id: r.id.toLowerCase(), planned_activity_id: r.planned_activity_id ? r.planned_activity_id.toLowerCase() : null, device_id: typeof r.device_id === "string" && r.device_id ? r.device_id.slice(0, 64) : "respaldo",
-      title: r.title.trim().slice(0, 80), category: r.category, mode: r.mode, status: r.status, started_at: isoOr(r.started_at, c), segment_started_at: isoOr(r.segment_started_at, null), segments: segs,
-      focus_seconds: Math.round(segSecs(segs)), pomodoro: r.mode === "pomodoro" ? pomoClean(r.pomodoro) : null, ended_at: isoOr(r.ended_at, null), created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
+      title: r.title.trim().slice(0, 80), category: r.category, mode: r.mode, status: r.status, started_at: new Date(st).toISOString(), segment_started_at: null, segments: segs,
+      focus_seconds: Math.round(segSecs(segs)), pomodoro: r.mode === "pomodoro" ? pomoClean(r.pomodoro) : null, ended_at: en === null ? null : new Date(en).toISOString(), created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
   }
   return { plans, focus, skipped };
 }
