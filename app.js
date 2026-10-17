@@ -13,24 +13,50 @@ function makeDemo(){
 }
 
 /* ============ Estado y guardado ============ */
-const state={days:{},profile:{name:"",motto:""},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null};
+const state={days:{},rows:new Map(),profile:{name:"",motto:"",updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null};
+// Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
+function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity),note:r.note||"",ts:Date.parse(r.created_at)||0}}
+function rebuildDays(){
+  const days={};
+  for(const r of state.rows.values()){ if(r.deleted_at) continue; (days[r.date]||(days[r.date]={activities:[]})).activities.push(rowToAct(r)) }
+  for(const k in days) days[k].activities.sort((x,y)=>x.ts-y.ts);
+  state.days=days;
+}
+const App=window.App={
+  /** Vuelve a leer todo de la copia local (después de sincronizar o cerrar sesión) */
+  async reload(){
+    try{const rows=await Store.allRows();state.rows=new Map(rows.map(r=>[r.id,r]));state.profile=await Store.getProfile()}catch(e){}
+    rebuildDays(); render();
+  }
+};
 async function boot(){
   const ok=await Store.init();
   state.mode=ok?"device":"memory";
-  try{const data=await Store.loadAll();state.days=data.days;state.profile=Object.assign({name:"",motto:""},data.profile)}catch(e){}
+  await App.reload();
   state.ready=true; render();
   if(navigator.storage&&navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+  Sync.onChange(onSyncChange);
+  Sync.init().catch(()=>{});
 }
-function saveDay(k){Store.saveDay(k,state.days[k]).catch(()=>toast("No se pudo guardar en este dispositivo."))}
+const nowISO=()=>Sync.now();
+/** Guarda filas cambiadas: memoria → dispositivo → cola de sincronización */
+function commitRows(rows){
+  for(const r of rows) state.rows.set(r.id,r);
+  rebuildDays();
+  Store.putRows(rows).then(()=>Sync.changed()).catch(()=>toast("No se pudo guardar en este dispositivo."));
+}
 let profTimer;
-function saveProfile(){clearTimeout(profTimer);profTimer=setTimeout(()=>Store.saveProfile(state.profile).catch(()=>{}),400)}
+function saveProfile(){
+  clearTimeout(profTimer);
+  profTimer=setTimeout(()=>{state.profile.updated_at=nowISO();Store.saveProfile(state.profile).then(()=>Sync.changed()).catch(()=>{})},500);
+}
 
 /* ============ Acciones ============ */
 function addActivity(k,a){
   const before=compute();
   if(state.demo){state.demo=false}
-  (state.days[k]||(state.days[k]={activities:[]})).activities.push(a);
-  saveDay(k);
+  const at=nowISO();
+  commitRows([{id:Store.newId(),date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",created_at:at,updated_at:at,deleted_at:null}]);
   const after=compute();
   toast(`<b>+${a.xp} XP</b> · ${CAT[a.cat].name}`);
   if(after.perDay[k]?.full && !before.perDay[k]?.full) toast(`<b>Día completo</b> · +${FULL_DAY_BONUS} XP de bonus`);
@@ -38,10 +64,21 @@ function addActivity(k,a){
   for(const id in after.unlocked) if(!before.unlocked[id]) toast(`Logro desbloqueado: <b>${ACH.find(x=>x.id===id).name}</b>`,"lvl");
   render();
 }
+function editActivity(id,k,a){
+  const old=state.rows.get(id); if(!old) return;
+  const before=compute();
+  commitRows([{...old,date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",updated_at:nowISO()}]);
+  const after=compute();
+  toast(`Actividad actualizada · <b>${a.xp} XP</b>`);
+  for(const x in after.unlocked) if(!before.unlocked[x]) toast(`Logro desbloqueado: <b>${ACH.find(y=>y.id===x).name}</b>`,"lvl");
+  render();
+}
 function delActivity(k,id){
-  const d=state.days[k]; if(!d) return;
-  d.activities=d.activities.filter(a=>a.id!==id); Store.markDeleted(id); if(!d.activities.length) delete state.days[k];
-  state.confirmDel=null; saveDay(k); render();
+  const old=state.rows.get(id); if(!old) return;
+  const at=nowISO();
+  state.confirmDel=null;
+  commitRows([{...old,deleted_at:at,updated_at:at}]);
+  render();
 }
 
 /* ============ UI helpers ============ */
@@ -63,7 +100,7 @@ function toast(html,cls=""){
 function actRow(k,a){
   const del = state.confirmDel===a.id
     ? `<span class="confirm">¿Eliminar? <button class="btn sm danger" data-del="${k}|${a.id}">Sí</button><button class="btn sm ghost" data-nodel>No</button></span>`
-    : `<button class="icon-btn" data-askdel="${a.id}" aria-label="Eliminar actividad">${ico("trash")}</button>`;
+    : `<button class="icon-btn edit" data-edit="${a.id}" aria-label="Editar actividad">${ico("edit")}</button><button class="icon-btn" data-askdel="${a.id}" aria-label="Eliminar actividad">${ico("trash")}</button>`;
   return `<div class="act c-${a.cat}"><div class="cat-ico">${ico(a.cat)}</div>
     <div style="min-width:0"><div class="act-t">${esc(a.title)}</div>
     <div class="act-m"><em>${CAT[a.cat].name}</em><span>${a.min} min</span><span>${DIFF[a.diff].name}</span>${a.note?`<span>· ${esc(a.note)}</span>`:""}</div></div>
@@ -201,10 +238,11 @@ function vPerfil(s){
   <p style="color:var(--muted);font-size:13px;margin:12px 0 0">Ejemplo: 30 minutos de entrenamiento normal = (10 + 30) × 1,5 = 60 XP. Máximo 240 minutos por actividad.</p></section>
   </div><div class="col">
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
-  <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet. Para pasarlo a otro dispositivo, exporta aquí e importa allá.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto.</p>
+  ${accountPanel()}
+  <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
-  <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
+  <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
   </div></div>`;
 }
 
@@ -215,20 +253,25 @@ function openAdd(k,cat){
   form={date:k||todayKey(),cat:cat||"curso",title:"",min:30,diff:2,note:"",err:""}; renderModal();
   setTimeout(()=>document.getElementById("fTitle")?.focus(),30);
 }
+function openEdit(id){
+  const r=state.rows.get(id); if(!r) return;
+  form={editId:id,date:r.date,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,note:r.note||"",err:""}; renderModal();
+  setTimeout(()=>document.getElementById("fTitle")?.focus(),30);
+}
 function renderModal(){
   const root=document.getElementById("modalRoot"); if(!form){root.innerHTML="";return}
   const xp=actXP(form.min,form.diff);
   root.innerHTML=`<div class="scrim" id="scrim"><form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="mTitle">
-  <div><div class="eyebrow">${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">Nueva actividad</h2></div>
+  <div><div class="eyebrow">${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">${form.editId?"Editar actividad":"Nueva actividad"}</h2></div>
   <div class="field"><label>Categoría</label><div class="seg">${CATS.map(c=>`<button type="button" class="c-${c.id}" data-fcat="${c.id}" aria-pressed="${form.cat===c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div><small style="color:var(--muted);font-size:12px">${CAT[form.cat].hint}</small></div>
   <div class="field"><label for="fTitle">¿Qué hiciste?</label><input class="inp" id="fTitle" maxlength="80" placeholder="Ej.: Clase 4 del curso de React" value="${esc(form.title)}"></div>
   <div class="row2"><div class="field"><label for="fMin">Minutos</label><input class="inp num" id="fMin" type="number" min="1" max="240" step="1" value="${form.min}"></div>
   <div class="field"><label for="fDate">Fecha</label><input class="inp" id="fDate" type="date" max="${todayKey()}" value="${form.date}"></div></div>
   <div class="field"><label>Intensidad</label><div class="seg three">${[1,2,3].map(d=>`<button type="button" data-fdiff="${d}" aria-pressed="${form.diff===d}">${DIFF[d].name}<small>×${String(DIFF[d].mult).replace(".",",")}</small></button>`).join("")}</div></div>
   <div class="field"><label for="fNote">Nota (opcional)</label><input class="inp" id="fNote" maxlength="120" placeholder="Algo que quieras recordar" value="${esc(form.note)}"></div>
-  <div class="preview"><span>Ganarás</span><b class="num" id="fXP">+${xp} XP</b></div>
+  <div class="preview"><span>${form.editId?"Vale":"Ganarás"}</span><b class="num" id="fXP">+${xp} XP</b></div>
   ${form.err?`<div class="err">${form.err}</div>`:""}
-  <div class="modal-f"><button type="button" class="btn ghost" id="fCancel">Cancelar</button><button type="submit" class="btn primary">Guardar actividad</button></div></form></div>`;
+  <div class="modal-f"><button type="button" class="btn ghost" id="fCancel">Cancelar</button><button type="submit" class="btn primary">${form.editId?"Guardar cambios":"Guardar actividad"}</button></div></form></div>`;
 }
 function readForm(){const g=id=>document.getElementById(id);if(!g("fTitle"))return;form.title=g("fTitle").value;form.min=g("fMin").value;form.date=g("fDate").value||todayKey();form.note=g("fNote").value}
 
@@ -242,8 +285,9 @@ document.addEventListener("submit",e=>{
   if(!form.title.trim()){form.err="Escribe qué actividad hiciste.";renderModal();document.getElementById("fTitle").focus();return}
   if(!(min>=1&&min<=240)){form.err="Los minutos tienen que estar entre 1 y 240.";renderModal();return}
   if(form.date>todayKey()){form.err="No puedes registrar días futuros.";renderModal();return}
-  const a={id:uid(),cat:form.cat,title:form.title.trim(),min,diff:form.diff,xp:actXP(min,form.diff),note:form.note.trim(),ts:Date.now()};
-  const k=form.date; form=null; renderModal(); addActivity(k,a);
+  const a={cat:form.cat,title:form.title.trim(),min,diff:form.diff,xp:actXP(min,form.diff),note:form.note.trim()};
+  const k=form.date, editId=form.editId; form=null; renderModal();
+  if(editId) editActivity(editId,k,a); else addActivity(k,a);
 });
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&form){form=null;renderModal()}});
 
@@ -255,6 +299,7 @@ document.addEventListener("click",e=>{
   if(t.dataset.fdiff){readForm();form.diff=+t.dataset.fdiff;renderModal();return}
   if(t.dataset.add!==undefined){openAdd(t.dataset.add,t.dataset.cat);render();return}
   if(t.dataset.go){go(t.dataset.go);return}
+  if(t.dataset.edit){openEdit(t.dataset.edit);return}
   if(t.dataset.askdel){state.confirmDel=t.dataset.askdel;render();return}
   if(t.dataset.nodel!==undefined){state.confirmDel=null;render();return}
   if(t.dataset.del){const[k,id]=t.dataset.del.split("|");delActivity(k,id);return}
@@ -263,7 +308,7 @@ document.addEventListener("click",e=>{
   if(t.dataset.dayshift!==undefined){const n=+t.dataset.dayshift;state.todayView=n===0?null:addDays(state.todayView||todayKey(),n);if(state.todayView>=todayKey())state.todayView=null;render();return}
   if(t.id==="resetAsk"){state.confirmReset=true;render();return}
   if(t.id==="resetNo"){state.confirmReset=false;render();return}
-  if(t.id==="resetYes"){const ks=Object.keys(state.days);ks.forEach(k=>state.days[k].activities.forEach(a=>Store.markDeleted(a.id)));state.days={};ks.forEach(saveDay);state.confirmReset=false;toast("Progreso borrado.");render();return}
+  if(t.id==="resetYes"){const at=nowISO();commitRows([...state.rows.values()].filter(r=>!r.deleted_at).map(r=>({...r,deleted_at:at,updated_at:at})));state.confirmReset=false;toast("Progreso borrado.");render();return}
 });
 document.getElementById("fab").addEventListener("click",()=>openAdd(state.route==="historial"?state.histSel||todayKey():state.route==="hoy"?state.todayView||todayKey():todayKey()));
 
@@ -286,7 +331,10 @@ function backupPanel(){
   return h;
 }
 function exportJSON(){
-  return JSON.stringify({app:"life-rpg",version:1,exportedAt:new Date().toISOString(),profile:{name:state.profile.name||"",motto:state.profile.motto||""},days:state.days},null,2);
+  const rows=[...state.rows.values()].filter(r=>!r.deleted_at).sort((x,y)=>x.date.localeCompare(y.date)||x.created_at.localeCompare(y.created_at));
+  // "days" repite lo mismo en el formato viejo, para que también lo lea la versión de Claude
+  const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
+  return JSON.stringify({app:"life-rpg",version:2,exportedAt:new Date().toISOString(),profile:{name:state.profile.name||"",motto:state.profile.motto||"",updated_at:state.profile.updated_at},activities:rows,days},null,2);
 }
 async function doExport(){
   bk.err="";bk.copyText="";
@@ -300,38 +348,49 @@ async function doExport(){
   try{const url=URL.createObjectURL(file);const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);toast("Respaldo exportado.")}
   catch(e){bk.copyText=text;render()}
 }
+function validRow(r){
+  const min=Math.round(+r.minutes), diff=+r.intensity;
+  return r&&CAT[r.category]&&min>=1&&min<=240&&DIFF[diff]&&typeof r.title==="string"&&r.title.trim()&&/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&!isNaN(fromKey(r.date))&&r.date<=todayKey();
+}
 function parseBackup(text){
   let j; try{j=JSON.parse(text)}catch(e){throw "El archivo no es un JSON válido."}
-  if(!j||typeof j!=="object"||!j.days||typeof j.days!=="object") throw "Este archivo no es un respaldo de Life RPG.";
-  const days={}; let actCount=0, skipped=0;
-  for(const k of Object.keys(j.days)){
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(k)||isNaN(fromKey(k))||k>todayKey()){skipped++;continue}
-    const list=Array.isArray(j.days[k]&&j.days[k].activities)?j.days[k].activities:[];
-    const acts=[];
-    for(const a of list){
-      const min=Math.round(+a?.min), diff=+a?.diff;
-      if(!a||!CAT[a.cat]||!(min>=1&&min<=240)||!DIFF[diff]||typeof a.title!=="string"||!a.title.trim()){skipped++;continue}
-      acts.push({id:typeof a.id==="string"&&a.id?a.id.slice(0,40):uid(),cat:a.cat,title:a.title.trim().slice(0,80),min,diff,xp:actXP(min,diff),note:typeof a.note==="string"?a.note.trim().slice(0,120):"",ts:+a.ts||Date.now()});
+  if(!j||typeof j!=="object"||(!Array.isArray(j.activities)&&(!j.days||typeof j.days!=="object"))) throw "Este archivo no es un respaldo de Life RPG.";
+  const rows=[]; let skipped=0;
+  if(Array.isArray(j.activities)){ // versión 2
+    for(const r of j.activities){
+      if(!r||!validRow(r)){skipped++;continue}
+      rows.push(Store.clean({...r,title:r.title.trim().slice(0,80),minutes:Math.round(+r.minutes),note:typeof r.note==="string"?r.note.trim().slice(0,120):"",created_at:r.created_at||nowISO(),updated_at:r.updated_at||r.created_at||nowISO(),deleted_at:r.deleted_at||null}));
     }
-    if(acts.length){days[k]={activities:acts};actCount+=acts.length}
+  } else { // versión 1: un registro por día
+    for(const k of Object.keys(j.days)){
+      const list=Array.isArray(j.days[k]&&j.days[k].activities)?j.days[k].activities:[];
+      for(const a of list){
+        const r=a&&Store.legacyToRow(k,{...a,title:typeof a.title==="string"?a.title.trim():""});
+        if(!r||!validRow(r)){skipped++;continue}
+        rows.push(r);
+      }
+    }
   }
-  const ks=Object.keys(days).sort();
+  const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
   const pr=j.profile||{};
-  return {days,dayCount:ks.length,actCount,skipped,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):""}};
+  return {rows,dayCount:ks.length,actCount:live.length,skipped,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null}};
 }
 function applyImport(mode){
   const P=bk.pending; if(!P) return;
-  const before=compute(), touched=new Set();
-  if(mode==="replace"){ for(const k of Object.keys(state.days)){ touched.add(k); state.days[k].activities.forEach(a=>{ if(!P.days[k]||!P.days[k].activities.some(b=>b.id===a.id)) Store.markDeleted(a.id) }) } state.days={}; }
-  for(const k in P.days){
-    const cur=state.days[k]||(state.days[k]={activities:[]});
-    const ids=new Set(cur.activities.map(a=>a.id));
-    for(const a of P.days[k].activities) if(!ids.has(a.id)) cur.activities.push(a);
-    touched.add(k);
+  const before=compute(), at=nowISO(), out=[], inFile=new Set(P.rows.map(r=>r.id));
+  if(mode==="replace"){
+    // Lo que no está en el archivo se borra; lo del archivo queda tal cual, marcado como cambio nuevo
+    for(const r of state.rows.values()) if(!r.deleted_at&&!inFile.has(r.id)) out.push({...r,deleted_at:at,updated_at:at});
+    for(const r of P.rows) if(!r.deleted_at) out.push({...r,updated_at:at});
+  } else {
+    // Combinar: solo suma lo que falta o lo que es más reciente que lo que ya hay
+    for(const r of P.rows){ const l=state.rows.get(r.id); if(!l||Date.parse(r.updated_at)>Date.parse(l.updated_at)) out.push(r) }
   }
-  if(mode==="replace"||!state.profile.name){ if(P.profile.name) state.profile.name=P.profile.name; }
-  if(mode==="replace"||!state.profile.motto){ if(P.profile.motto) state.profile.motto=P.profile.motto; }
-  touched.forEach(saveDay); saveProfile();
+  if(out.length) commitRows(out);
+  let profChanged=false;
+  if(mode==="replace"||!state.profile.name){ if(P.profile.name){state.profile.name=P.profile.name;profChanged=true} }
+  if(mode==="replace"||!state.profile.motto){ if(P.profile.motto){state.profile.motto=P.profile.motto;profChanged=true} }
+  if(profChanged) saveProfile();
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
@@ -361,6 +420,68 @@ document.addEventListener("click",e=>{
     case "expCopy": { const ta=document.getElementById("expText"); navigator.clipboard?.writeText(bk.copyText).then(()=>toast("Copiado."),()=>{ta.focus();ta.select()}) ?? (ta.focus(),ta.select()); break; }
   }
 });
+/* ============ Cuenta y sincronización ============ */
+const acc={email:"",pass:"",err:"",busy:false,outAsk:false};
+function accountPanel(){
+  const I=Sync.info;
+  if(!I.enabled) return "";
+  let body;
+  if(!I.signedIn){
+    body=`<p style="color:var(--muted);font-size:13.5px;margin:0 0 14px">Inicia sesión con la misma cuenta en tu PC y en tu celular para ver el mismo progreso en ambos. Sin cuenta, la app sigue funcionando solo en este dispositivo.</p>
+    <form id="accForm" style="display:flex;flex-direction:column;gap:12px" autocomplete="on">
+      <div class="field"><label for="accEmail">Email</label><input class="inp" id="accEmail" type="email" autocomplete="email" inputmode="email" value="${esc(acc.email)}" placeholder="tu@email.com"></div>
+      <div class="field"><label for="accPass">Contraseña</label><input class="inp" id="accPass" type="password" autocomplete="current-password" minlength="8" placeholder="Mínimo 8 caracteres"></div>
+      ${acc.err?`<div class="err">${esc(acc.err)}</div>`:""}
+      <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="submit" class="btn sm primary" id="accIn" ${acc.busy?"disabled":""}>Iniciar sesión</button><button type="button" class="btn sm" id="accUp" ${acc.busy?"disabled":""}>Crear cuenta</button></div>
+    </form>`;
+  } else if(I.status==="confirm"){
+    body=`<p style="font-size:14px;margin:0 0 6px">Conectado como <b>${esc(I.email)}</b>.</p>
+    <div class="goal"><b>Tienes ${I.uploadCount} actividades en este dispositivo</b><span style="font-size:13px;color:var(--muted)">Se sumarán a tu cuenta sin borrar nada de lo que ya tenga. Después verás lo mismo en todos tus dispositivos.</span>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button class="btn sm primary" id="accUpload">Subir a mi cuenta</button><button class="btn sm ghost" id="accCancel">Cancelar y cerrar sesión</button></div></div>`;
+  } else {
+    const last=I.lastSync?new Date(I.lastSync).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"}):"";
+    body=`<p style="font-size:14px;margin:0 0 10px">Conectado como <b>${esc(I.email)}</b>.</p>
+    <div class="goal"><div class="goal-h"><span>Estado</span><span class="num" id="accLast">${last?"Última vez: "+last:""}</span></div><b id="accStatus">${esc(Sync.label())}</b>
+    <span style="font-size:13px;color:var(--muted)">Los cambios se guardan primero aquí y se suben solos cuando hay conexión.</span></div>
+    ${acc.outAsk?`<div class="confirm" style="flex-wrap:wrap;margin-top:12px">${I.pending?`Hay <b style="color:var(--bad)">${I.pending} cambios sin subir</b> que se perderán. `:""}Se borrarán los datos de este dispositivo (siguen en tu cuenta). ¿Cerrar sesión? <button class="btn sm danger" id="accOutYes">Sí, cerrar sesión</button><button class="btn sm ghost" id="accOutNo">Cancelar</button></div>`
+    :`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn sm" id="accSync">Sincronizar ahora</button><button class="btn sm ghost" id="accOut">Cerrar sesión</button></div>`}`;
+  }
+  return `<section class="panel"><div class="panel-h"><h2>Cuenta y sincronización</h2></div>${body}</section>`;
+}
+let lastAuthKey="";
+function onSyncChange(){
+  const I=Sync.info, key=`${I.signedIn}|${I.status==="confirm"}|${I.linked}`;
+  const pill=document.getElementById("savePill");
+  if(pill){pill.className="save-pill"+(state.mode==="device"&&I.status!=="error"?" ok":"");pill.lastElementChild.textContent=Sync.label()}
+  const st=document.getElementById("accStatus"); if(st) st.textContent=Sync.label();
+  const ls=document.getElementById("accLast"); if(ls&&I.lastSync) ls.textContent="Última vez: "+new Date(I.lastSync).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"});
+  if(key!==lastAuthKey){lastAuthKey=key;if(state.ready&&state.route==="perfil"&&!document.activeElement?.closest?.("#accForm"))render()}
+}
+async function accSubmit(mode){
+  const email=(document.getElementById("accEmail")?.value||"").trim(), pass=document.getElementById("accPass")?.value||"";
+  acc.email=email;
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){acc.err="Escribe un email válido.";render();return}
+  if(pass.length<8){acc.err="La contraseña necesita al menos 8 caracteres.";render();return}
+  acc.err="";acc.busy=true;render();
+  try{ if(mode==="up") await Sync.signUp(email,pass); else await Sync.signIn(email,pass); toast(mode==="up"?"Cuenta creada.":"Sesión iniciada."); }
+  catch(e){ acc.err=typeof e==="string"?e:"No se pudo iniciar sesión." }
+  acc.busy=false; render();
+}
+document.addEventListener("input",e=>{ if(e.target.id==="accEmail") acc.email=e.target.value; });
+document.addEventListener("submit",e=>{ if(e.target.id==="accForm"){e.preventDefault();accSubmit("in")} });
+document.addEventListener("click",async e=>{
+  const t=e.target.closest("button"); if(!t) return;
+  switch(t.id){
+    case "accUp": accSubmit("up"); break;
+    case "accUpload": await Sync.confirmUpload(); toast("Subiendo tus actividades…"); render(); break;
+    case "accCancel": await Sync.signOut(); render(); break;
+    case "accSync": Sync.run(); break;
+    case "accOut": acc.outAsk=true; render(); break;
+    case "accOutNo": acc.outAsk=false; render(); break;
+    case "accOutYes": acc.outAsk=false; await Sync.signOut(); toast("Sesión cerrada."); render(); break;
+  }
+});
+
 /* ============ Instalación ============ */
 let installEvt=null;
 addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvt=e;render()});
@@ -381,8 +502,8 @@ function render(){
   const v={dashboard:vDashboard,hoy:vHoy,historial:vHistorial,logros:vLogros,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
   const keepFocus=document.activeElement&&document.activeElement.id; const caret=document.activeElement?.selectionStart;
   document.getElementById("view").innerHTML=v(s);
-  if(keepFocus&&(keepFocus==="pName"||keepFocus==="pMotto")){const el=document.getElementById(keepFocus);if(el){el.focus();try{el.setSelectionRange(caret,caret)}catch(e){}}}
-  const pill=document.getElementById("savePill");pill.className="save-pill"+(state.mode==="device"?" ok":"");pill.lastElementChild.textContent=state.mode==="device"?(navigator.onLine?"Guardado en este dispositivo":"Sin conexión · guardado aquí"):"Sin guardado disponible";
+  if(keepFocus&&(keepFocus==="pName"||keepFocus==="pMotto"||keepFocus==="accEmail")){const el=document.getElementById(keepFocus);if(el){el.focus();try{el.setSelectionRange(caret,caret)}catch(e){}}}
+  const pill=document.getElementById("savePill");pill.className="save-pill"+(state.mode==="device"&&Sync.info.status!=="error"?" ok":"");pill.lastElementChild.textContent=state.mode==="device"?(Sync.info.signedIn?Sync.label():(navigator.onLine?"Guardado en este dispositivo":"Sin conexión · guardado aquí")):"Sin guardado disponible";
   document.getElementById("sideDate").textContent=cap(fromKey(todayKey()).toLocaleDateString("es",{weekday:"long",day:"numeric",month:"long"}));
 }
 document.getElementById("nav").addEventListener("click",e=>{const a=e.target.closest("a[data-go]");if(a){e.preventDefault();go(a.dataset.go)}});

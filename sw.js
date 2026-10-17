@@ -1,9 +1,9 @@
 /* Life RPG — service worker: guarda la app para que abra sin internet.
    Cambia VERSION en cada publicación para que los teléfonos bajen la versión nueva. */
-const VERSION = "life-rpg-v1";
+const VERSION = "life-rpg-v2";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./game.js", "./storage.js", "./app.js",
-  "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
+  "./config.js", "./sync.js", "./vendor/supabase-2.117.2.js", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
   "./icons/icon-maskable-512.png", "./icons/apple-touch-icon.png"
 ];
 const FONTS = "life-rpg-fonts";
