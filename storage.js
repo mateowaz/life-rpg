@@ -6,11 +6,27 @@
      activities  una fila por actividad, con los mismos campos que Supabase
                  (las borradas quedan con deleted_at y no se muestran)
      pending     ids de lo que cambió y todavía no se subió ({id, updated_at})
-     meta        perfil, cuenta vinculada, marca de la última bajada, desfase de reloj */
+     meta        perfil, cuenta vinculada, marcas de la última bajada, desfase de reloj
+     coins       historial de Oro (transacciones)
+     items       recompensas de la tienda y deseos de la Wishlist
+     purchases   compras (confirmadas, pendientes o rechazadas)
+     goals       objetivos mensuales
+     chests      cofres por nivel ya abiertos
+     ops         compras, reclamos y cofres que esperan la confirmación del servidor */
 const Store = (() => {
-  const NAME = "liferpg", VERSION = 2;
+  const NAME = "liferpg", VERSION = 3;
   let db = null;
-  const mem = { rows: new Map(), pending: new Map(), meta: new Map() }; // si el navegador no deja guardar
+  const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map() }; // si el navegador no deja guardar
+  /* Tablas nuevas (versión 3). prefix = cómo se anotan en la cola de pendientes; sin prefix nunca se suben
+     (las compras y los cofres solo los escribe el servidor). */
+  const T = {
+    coins:     { key: "id",    prefix: "coin:" },
+    items:     { key: "id",    prefix: "item:" },
+    goals:     { key: "id",    prefix: "goal:" },
+    purchases: { key: "id" },
+    chests:    { key: "level" },
+  };
+  for (const t in T) mem[t] = new Map();
 
   /* ---- ids: los ids viejos (no UUID) se convierten siempre al mismo UUID ---- */
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -50,6 +66,30 @@ const Store = (() => {
       deleted_at: r.deleted_at ? iso(r.deleted_at) : null };
   }
 
+  /* Origen del Oro que calcula la app (el resto lo escribe solo el servidor) */
+  const DERIVED = ["activity", "full_day", "streak"];
+  const isoN = (v) => (v ? iso(v) : null);
+  /** Normaliza filas de las tablas nuevas: fechas en un solo formato, sin campos de más */
+  function cleanT(t, r) {
+    switch (t) {
+      case "coins": return { id: r.id, amount: Math.round(+r.amount), type: r.type, source: r.source, source_id: String(r.source_id),
+        description: String(r.description || "").slice(0, 80), created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "items": return { id: r.id, item_type: r.item_type === "wishlist" ? "wishlist" : "reward", name: String(r.name || "").slice(0, 40),
+        description: String(r.description || "").slice(0, 120), price: Math.round(+r.price), icon: String(r.icon || "gift").slice(0, 16),
+        rarity: r.rarity || "common", category: r.category || null, active: r.active !== false, is_primary_goal: !!r.is_primary_goal,
+        created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "goals": return { id: r.id, year: +r.year, month: +r.month, title: String(r.title || "").slice(0, 60), description: String(r.description || "").slice(0, 120),
+        goal_type: r.goal_type, category: r.category || null, target_value: Math.round(+r.target_value), manual_progress: Math.max(0, Math.round(+r.manual_progress || 0)),
+        coin_reward: Math.round(+r.coin_reward || 0), completed_at: isoN(r.completed_at), claimed_at: isoN(r.claimed_at),
+        created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "purchases": return { id: r.id, item_id: r.item_id, item_type: r.item_type || "reward", item_name: String(r.item_name || ""), item_icon: r.item_icon || "gift",
+        item_rarity: r.item_rarity || "common", price: Math.round(+r.price), status: r.status, reason: r.reason || null,
+        purchased_at: iso(r.purchased_at), updated_at: iso(r.updated_at) };
+      case "chests": return { level: +r.level, name: r.name, gold: +r.gold, claimed_at: iso(r.claimed_at), updated_at: iso(r.updated_at || r.claimed_at) };
+    }
+    return r;
+  }
+
   function open() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(NAME, VERSION);
@@ -58,6 +98,9 @@ const Store = (() => {
         if (!d.objectStoreNames.contains("activities")) d.createObjectStore("activities", { keyPath: "id" });
         if (!d.objectStoreNames.contains("pending")) d.createObjectStore("pending", { keyPath: "id" });
         if (!d.objectStoreNames.contains("meta")) d.createObjectStore("meta", { keyPath: "key" });
+        // Versión 3: solo se agregan almacenes nuevos; nada de lo anterior se toca
+        for (const t in T) if (!d.objectStoreNames.contains(t)) d.createObjectStore(t, { keyPath: T[t].key });
+        if (!d.objectStoreNames.contains("ops")) d.createObjectStore("ops", { keyPath: "key" });
         // Versión 1 guardaba un registro por día: se convierte a una fila por actividad.
         // El almacén viejo "days" se conserva sin tocar, como respaldo.
         if (e.oldVersion === 1 && d.objectStoreNames.contains("days")) {
@@ -203,6 +246,9 @@ const Store = (() => {
       const rows = await this.allRows(), prof = await this.getProfile();
       const entries = rows.map((r) => ({ id: r.id, updated_at: r.updated_at }));
       if (prof.updated_at && (prof.name || prof.motto)) entries.push({ id: "profile", updated_at: prof.updated_at });
+      for (const r of await this.all("items")) entries.push({ id: "item:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("goals")) entries.push({ id: "goal:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("coins")) if (DERIVED.includes(r.source)) entries.push({ id: "coin:" + r.id, updated_at: r.updated_at });
       if (!db) { for (const e of entries) mem.pending.set(e.id, e); return; }
       await tx(["pending"], "readwrite", (t) => { for (const e of entries) t.objectStore("pending").put(e); });
     },
@@ -211,12 +257,79 @@ const Store = (() => {
 
     /** Borra los datos de este dispositivo (al cerrar sesión). Conserva el id del dispositivo. */
     async clearAll() {
-      if (!db) { mem.rows.clear(); mem.pending.clear(); const d = mem.meta.get("device"); mem.meta.clear(); mem.meta.set("device", d); return; }
+      const stores = ["activities", "pending", "meta", "ops", ...Object.keys(T)];
+      if (!db) { mem.rows.clear(); mem.pending.clear(); mem.ops.clear(); for (const t in T) mem[t].clear(); const d = mem.meta.get("device"); mem.meta.clear(); mem.meta.set("device", d); return; }
       const device = await getMeta("device");
-      await tx(["activities", "pending", "meta"], "readwrite", (t) => {
-        t.objectStore("activities").clear(); t.objectStore("pending").clear(); t.objectStore("meta").clear();
+      await tx(stores, "readwrite", (t) => {
+        for (const st of stores) t.objectStore(st).clear();
         t.objectStore("meta").put({ key: "device", value: device });
       });
+    },
+
+    /* ---- Tablas nuevas: coins, items, goals, purchases, chests ---- */
+    DERIVED,
+    /** Todas las filas de una tabla */
+    async all(t) {
+      if (!db) return [...mem[t].values()];
+      return tx([t], "readonly", (x, set) => req(x.objectStore(t).getAll()).then(set));
+    },
+    async getT(t, keys) {
+      if (!db) return keys.map((k) => mem[t].get(k)).filter(Boolean);
+      return tx([t], "readonly", (x, set) => Promise.all(keys.map((k) => req(x.objectStore(t).get(k)))).then((r) => set(r.filter(Boolean))));
+    },
+    /** Guarda filas cambiadas en este dispositivo; las que se suben quedan en la cola de pendientes */
+    async put(t, rows, { pending = true } = {}) {
+      const P = pending && T[t].prefix;
+      rows = rows.map((r) => cleanT(t, r));
+      if (!db) { for (const r of rows) { mem[t].set(r[T[t].key], r); if (P) mem.pending.set(P + r.id, { id: P + r.id, updated_at: r.updated_at }); } return; }
+      await tx(P ? [t, "pending"] : [t], "readwrite", (x) => {
+        for (const r of rows) {
+          x.objectStore(t).put(r);
+          if (P) x.objectStore("pending").put({ id: P + r.id, updated_at: r.updated_at });
+        }
+      });
+    },
+    /** Filas que llegaron de Supabase. Gana el updated_at más reciente; con force, siempre el servidor.
+        Un objetivo reclamado no vuelve atrás. Devuelve cuántas cambiaron. */
+    async applyRemoteT(t, remote, { force = false } = {}) {
+      if (!remote.length) return 0;
+      const K = T[t].key, P = T[t].prefix;
+      const merge = (l, r) => (t === "goals" && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
+      const wins = (l, r) => !l || force || time(r.updated_at) > time(l.updated_at) || (t === "goals" && r.claimed_at && !l.claimed_at);
+      const rows = remote.map((r) => cleanT(t, r));
+      if (!db) {
+        let n = 0;
+        for (const r of rows) { const l = mem[t].get(r[K]); if (wins(l, r)) { mem[t].set(r[K], merge(l, r)); if (P) mem.pending.delete(P + r.id); n++; } }
+        return n;
+      }
+      return tx(P ? [t, "pending"] : [t], "readwrite", async (x, set) => {
+        let n = 0;
+        const s = x.objectStore(t);
+        await Promise.all(rows.map(async (r) => {
+          const l = await req(s.get(r[K]));
+          if (wins(l, r)) {
+            s.put(merge(l, r)); n++;
+            if (P) { const ps = x.objectStore("pending"), p = await req(ps.get(P + r.id)); if (p && time(p.updated_at) <= time(r.updated_at)) ps.delete(P + r.id); }
+          }
+        }));
+        set(n);
+      });
+    },
+
+    /* ---- Operaciones que decide el servidor (compras, reclamos, cofres) ---- */
+    async ops() {
+      const list = db ? await tx(["ops"], "readonly", (x, set) => req(x.objectStore("ops").getAll()).then(set)) : [...mem.ops.values()];
+      return list.sort((a, b) => a.seq - b.seq);
+    },
+    async putOp(op) {
+      op = { seq: Date.now() + Math.random(), ...op };
+      if (!db) { mem.ops.set(op.key, op); return; }
+      await tx(["ops"], "readwrite", (x) => { x.objectStore("ops").put(op); });
+    },
+    async delOps(keys) {
+      if (!keys.length) return;
+      if (!db) { for (const k of keys) mem.ops.delete(k); return; }
+      await tx(["ops"], "readwrite", (x) => { for (const k of keys) x.objectStore("ops").delete(k); });
     },
   };
 })();
