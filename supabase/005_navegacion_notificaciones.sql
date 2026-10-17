@@ -157,10 +157,37 @@ create function private.plan_open(p public.planned_activities) returns boolean l
   select p.deleted_at is null and p.status = 'planned'
      and not exists (select 1 from public.activities a where a.user_id = p.user_id and a.id = p.id and a.deleted_at is null)
 $$;
+-- Texto → entero, o el fallback si es null, vacío, no numérico o no entra en un entero. Nunca lanza un error.
+-- Acepta "25", " 25 ", "25.0" y "25.4" (se redondea, como Math.round en la app).
+create function private.safe_int(value text, fallback integer) returns integer language plpgsql immutable set search_path = '' as $$
+begin
+  if value is null or btrim(value) !~ '^-?[0-9]{1,9}(\.[0-9]{1,6})?$' then return fallback; end if;
+  return round(btrim(value)::numeric)::integer;
+exception when others then return fallback;
+end $$;
+-- Un número del Pomodoro, con los mismos límites y valores por defecto que la app (focus.js: POMO_LIM y POMO_DEF):
+-- focus 5–120 (25), short 1–30 (5), long 5–60 (15), every 2–8 (4). Fuera de rango → el valor por defecto, igual que la app.
+-- done (rondas hechas): nunca negativo. Un pomodoro que no es un objeto JSON da los valores por defecto.
+create function private.pomo_int(pomo jsonb, k text) returns integer language plpgsql immutable set search_path = '' as $$
+declare v integer; lo integer; hi integer; def integer;
+begin
+  case k
+    when 'focus' then lo := 5; hi := 120; def := 25;
+    when 'short' then lo := 1; hi := 30;  def := 5;
+    when 'long'  then lo := 5; hi := 60;  def := 15;
+    when 'every' then lo := 2; hi := 8;   def := 4;
+    when 'done'  then lo := 0; hi := 100000; def := 0;
+    else return null;
+  end case;
+  if pomo is null or jsonb_typeof(pomo) <> 'object' then return def; end if;
+  v := private.safe_int(pomo->>k, def);
+  if v < lo or v > hi then return def; end if;
+  return v;
+end $$;
 -- Descanso que sigue a un enfoque del Pomodoro (el mismo cálculo que hace la app)
 create function private.break_minutes(pomo jsonb) returns integer language sql immutable set search_path = '' as $$
-  select case when ((coalesce((pomo->>'done')::int, 0) + 1) % greatest(coalesce((pomo->>'every')::int, 4), 1)) = 0
-              then coalesce((pomo->>'long')::int, 15) else coalesce((pomo->>'short')::int, 5) end
+  select case when (private.pomo_int(pomo, 'done') + 1) % private.pomo_int(pomo, 'every') = 0
+              then private.pomo_int(pomo, 'long') else private.pomo_int(pomo, 'short') end
 $$;
 
 -- Anota un aviso y sus entregas. Devuelve true si es nuevo.
@@ -214,8 +241,11 @@ begin
     if e.ref_min = 0 then                                                              -- fin de enfoque
       return f.pomodoro->>'phase' = 'focus' and abs(extract(epoch from ends - e.ref_at)) < 1;
     end if;
-    return (f.pomodoro->>'phase' = 'focus' and abs(extract(epoch from ends + make_interval(mins => private.break_minutes(f.pomodoro)) - e.ref_at)) < 1)
-        or (f.pomodoro->>'phase' in ('short', 'long') and abs(extract(epoch from ends - e.ref_at)) < 1);
+    begin
+      return (f.pomodoro->>'phase' = 'focus' and abs(extract(epoch from ends + make_interval(mins => private.break_minutes(f.pomodoro)) - e.ref_at)) < 1)
+          or (f.pomodoro->>'phase' in ('short', 'long') and abs(extract(epoch from ends - e.ref_at)) < 1);
+    exception when others then return false;                                           -- fila de Focus corrupta: ese aviso se descarta
+    end;
   end if;
   if e.kind = 'goal' then
     return exists (select 1 from public.monthly_goals g where g.user_id = e.user_id and g.id = e.ref_id and g.deleted_at is null and g.claimed_at is null);
@@ -289,17 +319,19 @@ begin
     if pr.focus then
       for f in select x.* from public.focus_sessions x
                 where x.user_id = u.user_id and x.deleted_at is null and x.status = 'running' and x.mode = 'pomodoro' loop
+       begin                                                                -- una fila corrupta se saltea; las demás siguen
+        if jsonb_typeof(f.pomodoro) is distinct from 'object' then continue; end if;
         ends := private.ts(f.pomodoro->>'ends_at');
         if ends is null then continue; end if;
         if f.pomodoro->>'phase' = 'focus' then
           if now() >= ends and now() < ends + interval '10 minutes' then
             if private.add_event(u.user_id, 'focus:' || f.id || ':focus:' || floor(extract(epoch from ends))::bigint, 'focus', f.id, ends, 0,
-                 'Enfoque terminado', coalesce((f.pomodoro->>'focus')::int, 25) || ' minutos completados · ' || f.title,
+                 'Enfoque terminado', private.pomo_int(f.pomodoro, 'focus') || ' minutos completados · ' || f.title,
                  '#planificador?session=' || f.id, 'focus-' || f.id, '[]'::jsonb, 'high', ends, ends + interval '10 minutes') then n := n + 1; end if;
           end if;
           brk := private.break_minutes(f.pomodoro);
           ends := ends + make_interval(mins => brk);                       -- la app empieza el descanso sola al terminar el enfoque
-        elsif f.pomodoro->>'phase' not in ('short', 'long') then continue;
+        elsif coalesce(f.pomodoro->>'phase', '') not in ('short', 'long') then continue;     -- sin fase o fase desconocida: nada que avisar
         end if;
         if now() >= ends and now() < ends + interval '10 minutes' then
           if private.add_event(u.user_id, 'focus:' || f.id || ':break:' || floor(extract(epoch from ends))::bigint, 'focus', f.id, ends, 1,
@@ -307,6 +339,9 @@ begin
                '#planificador?session=' || f.id, 'focus-' || f.id, '[{"action":"timer","title":"Siguiente enfoque"}]'::jsonb, 'high',
                ends, ends + interval '10 minutes') then n := n + 1; end if;
         end if;
+       exception when others then
+        raise warning 'push: se salteó la sesión de enfoque % (%)', f.id, sqlerrm;
+       end;
       end loop;
     end if;
   end loop;
@@ -556,7 +591,7 @@ create policy own_update on public.notification_preferences for update to authen
   using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
 revoke execute on function private.prefs(uuid), private.kind_on(public.notification_preferences, text), private.in_quiet(public.notification_preferences, timestamptz),
-  private.cat_name(text), private.mins(integer), private.plan_open(public.planned_activities), private.break_minutes(jsonb),
+  private.cat_name(text), private.mins(integer), private.plan_open(public.planned_activities), private.safe_int(text, integer), private.pomo_int(jsonb, text), private.break_minutes(jsonb),
   private.add_event(uuid, text, text, uuid, timestamptz, integer, text, text, text, text, jsonb, text, timestamptz, timestamptz, text),
   private.still_valid(public.notification_events), private.enqueue_due(), private.push_kick(), private.push_tick(), private.ts_uuid(text)
   from public, anon, authenticated;
