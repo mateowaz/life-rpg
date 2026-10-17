@@ -13,9 +13,11 @@
      goals       objetivos mensuales
      chests      cofres por nivel ya abiertos
      bosses      Boss de cada mes (versión 4)
+     plans       actividades planificadas (versión 5). "Completada" no se guarda: es la actividad con el mismo id
+     focus       sesiones de enfoque (versión 5), con sus tramos de tiempo
      ops         compras, reclamos y cofres que esperan la confirmación del servidor */
 const Store = (() => {
-  const NAME = "liferpg", VERSION = 4;
+  const NAME = "liferpg", VERSION = 5;
   let db = null;
   const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map() }; // si el navegador no deja guardar
   /* Tablas nuevas (versión 3). prefix = cómo se anotan en la cola de pendientes; sin prefix nunca se suben
@@ -27,6 +29,8 @@ const Store = (() => {
     purchases: { key: "id" },
     chests:    { key: "level" },
     bosses:    { key: "id",    prefix: "boss:" },   // versión 4
+    plans:     { key: "id",    prefix: "plan:" },   // versión 5
+    focus:     { key: "id",    prefix: "focus:" },  // versión 5
   };
   for (const t in T) mem[t] = new Map();
 
@@ -98,6 +102,15 @@ const Store = (() => {
         boss_type: r.boss_type, category: r.category || null, target_hp: Math.round(+r.target_hp), manual_progress: Math.max(0, Math.round(+r.manual_progress || 0)),
         coin_reward: Math.round(+r.coin_reward || 0), title_reward: r.title_reward ? String(r.title_reward).slice(0, 40) : null, theme: r.theme || "dragon",
         claimed_at: isoN(r.claimed_at), created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "plans": return { id: r.id, date: String(r.date).slice(0, 10), time: r.time ? String(r.time).slice(0, 5) : null, title: String(r.title || "").slice(0, 80),
+        category: r.category, planned_minutes: Math.round(+r.planned_minutes), intensity: +r.intensity, note: String(r.note || "").slice(0, 120),
+        status: ["planned", "skipped", "cancelled"].includes(r.status) ? r.status : "planned", moved_from: r.moved_from ? String(r.moved_from).slice(0, 10) : null,
+        created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "focus": return { id: r.id, planned_activity_id: r.planned_activity_id || null, device_id: String(r.device_id || ""), title: String(r.title || "").slice(0, 80),
+        category: r.category, mode: r.mode === "pomodoro" ? "pomodoro" : "free", status: r.status, started_at: iso(r.started_at), segment_started_at: isoN(r.segment_started_at),
+        segments: Array.isArray(r.segments) ? r.segments.filter((x) => Array.isArray(x) && x.length === 2).map(([a, b]) => [iso(a), iso(b)]) : [],
+        focus_seconds: Math.max(0, Math.round(+r.focus_seconds || 0)), pomodoro: r.pomodoro && typeof r.pomodoro === "object" ? r.pomodoro : null, ended_at: isoN(r.ended_at),
+        created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
       case "chests": return { level: +r.level, name: r.name, gold: +r.gold, claimed_at: iso(r.claimed_at), updated_at: iso(r.updated_at || r.claimed_at) };
     }
     return r;
@@ -111,7 +124,7 @@ const Store = (() => {
         if (!d.objectStoreNames.contains("activities")) d.createObjectStore("activities", { keyPath: "id" });
         if (!d.objectStoreNames.contains("pending")) d.createObjectStore("pending", { keyPath: "id" });
         if (!d.objectStoreNames.contains("meta")) d.createObjectStore("meta", { keyPath: "key" });
-        // Versiones 3 y 4: solo se agregan almacenes nuevos; nada de lo anterior se toca
+        // Versiones 3, 4 y 5: solo se agregan almacenes nuevos; nada de lo anterior se toca
         for (const t in T) if (!d.objectStoreNames.contains(t)) d.createObjectStore(t, { keyPath: T[t].key });
         if (!d.objectStoreNames.contains("ops")) d.createObjectStore("ops", { keyPath: "key" });
         // Versión 1 guardaba un registro por día: se convierte a una fila por actividad.
@@ -262,6 +275,8 @@ const Store = (() => {
       for (const r of await this.all("items")) entries.push({ id: "item:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("goals")) entries.push({ id: "goal:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("bosses")) entries.push({ id: "boss:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("plans")) entries.push({ id: "plan:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("focus")) entries.push({ id: "focus:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("coins")) if (DERIVED.includes(r.source)) entries.push({ id: "coin:" + r.id, updated_at: r.updated_at });
       if (!db) { for (const e of entries) mem.pending.set(e.id, e); return; }
       await tx(["pending"], "readwrite", (t) => { for (const e of entries) t.objectStore("pending").put(e); });
@@ -304,13 +319,15 @@ const Store = (() => {
       });
     },
     /** Filas que llegaron de Supabase. Gana el updated_at más reciente; con force, siempre el servidor.
-        Un objetivo o un Boss reclamado no vuelve atrás. Devuelve cuántas cambiaron. */
+        Un objetivo o un Boss reclamado no vuelve atrás, y una sesión de enfoque terminada no vuelve a correr.
+        Devuelve cuántas cambiaron. */
     async applyRemoteT(t, remote, { force = false } = {}) {
       if (!remote.length) return 0;
       const K = T[t].key, P = T[t].prefix;
       const sticky = t === "goals" || t === "bosses";
       const merge = (l, r) => (sticky && l && l.claimed_at && !r.claimed_at ? { ...r, claimed_at: l.claimed_at } : r);
-      const wins = (l, r) => !l || force || time(r.updated_at) > time(l.updated_at) || (sticky && r.claimed_at && !l.claimed_at);
+      const ended = (x) => x && (x.status === "finished" || x.status === "discarded");
+      const wins = (l, r) => !l || force || (t === "focus" && ended(l) && !ended(r) ? false : time(r.updated_at) > time(l.updated_at) || (sticky && r.claimed_at && !l.claimed_at));
       const rows = remote.map((r) => cleanT(t, r));
       if (!db) {
         let n = 0;

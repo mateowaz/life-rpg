@@ -14,7 +14,8 @@ function makeDemo(){
 
 /* ============ Estado y guardado ============ */
 const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:"",avatar_icon:"initials",avatar_frame:"simple",avatar_bg:"violet",avatar_badge:"none",equipped_title:"",featured_badges:[],updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
-  eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null};
+  eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null,
+  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week"};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -32,6 +33,11 @@ const App=window.App={
       const byId=a=>new Map(a.map(r=>[r.id,r]));
       state.eco={coins:byId(coins),items:byId(items),purchases:byId(purchases),goals:byId(goals),chests:new Map(chests.map(c=>[c.level,c])),bosses:byId(bosses),ops};
       if(!state.bossSeen) state.bossSeen=new Set((await Store.getMeta("bossSeen"))||[]);
+    }catch(e){}
+    try{ // Planificador y enfoque (versión 5)
+      const [plans,focus]=await Promise.all([Store.all("plans"),Store.all("focus")]);
+      state.plans=new Map(plans.map(r=>[r.id,r])); state.focus=new Map(focus.map(r=>[r.id,r]));
+      if(!state.device){state.device=(await Store.getMeta("device"))||"este-dispositivo";state.pomo=(await Store.getMeta("pomo"))||null;state.wakeOn=!!(await Store.getMeta("wakeOn"))}
     }catch(e){}
     rebuildDays(); syncEconomy(false); render();
   }
@@ -61,11 +67,13 @@ function saveProfile(){
 
 /* ============ Acciones ============ */
 function bossHP(){const c=curMonth(),b=state.demo?null:bossFor(c.y,c.m);return b?{b,left:bossInfo(b).left}:null}
-function addActivity(k,a){
+/** id: la planificación o la sesión de enfoque de la que sale la actividad (mismo id = nunca dos actividades) */
+function addActivity(k,a,id){
+  const prev=id&&state.rows.get(id); if(prev&&!prev.deleted_at){toast("Esa actividad ya estaba registrada.");render();return}
   const before=compute(), g0=goldState(state.eco).balance, hp0=bossHP();
   if(state.demo){state.demo=false}
   const at=nowISO();
-  commitRows([{id:Store.newId(),date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",created_at:at,updated_at:at,deleted_at:null}]);
+  commitRows([{id:id||Store.newId(),date:k,category:a.cat,title:a.title,minutes:a.min,intensity:a.diff,note:a.note||"",created_at:at,updated_at:at,deleted_at:null}]);
   const after=compute();
   toast(`<b>+${a.xp} XP</b> · ${CAT[a.cat].name}`);
   goldToast(goldState(state.eco).balance-g0);
@@ -118,7 +126,7 @@ function actRow(k,a){
     : `<button class="icon-btn edit" data-edit="${a.id}" aria-label="Editar actividad">${ico("edit")}</button><button class="icon-btn" data-askdel="${a.id}" aria-label="Eliminar actividad">${ico("trash")}</button>`;
   return `<div class="act c-${a.cat}"><div class="cat-ico">${ico(a.cat)}</div>
     <div style="min-width:0"><div class="act-t">${esc(a.title)}</div>
-    <div class="act-m"><em>${CAT[a.cat].name}</em><span>${a.min} min</span><span>${DIFF[a.diff].name}</span>${a.note?`<span>· ${esc(a.note)}</span>`:""}</div></div>
+    <div class="act-m"><em>${CAT[a.cat].name}</em>${state.plans.has(a.id)?`<span class="from-plan" title="Venía del Planificador">${ico("plan")}Planificada</span>`:state.focus.has(a.id)?`<span class="from-plan" title="Sesión de enfoque">${ico("focus")}Enfoque</span>`:""}<span>${a.min} min</span><span>${DIFF[a.diff].name}</span>${a.note?`<span>· ${esc(a.note)}</span>`:""}</div></div>
     <div class="act-r"><span class="xp num">+${a.xp} XP</span>${state.demo?"":del}</div></div>`;
 }
 function dayList(k,s,{compact=false}={}){
@@ -139,7 +147,7 @@ function goals(s){
 function totalXPFor(lv){let t=0;for(let L=1;L<lv;L++)t+=needG(L);return t}
 
 /* ============ Vistas ============ */
-const NAV=[["dashboard","Dashboard","dash","Inicio"],["hoy","Hoy","hoy","Hoy"],["objetivos","Objetivos","target","Metas"],["boss","Boss","boss","Boss"],["historial","Historial","hist","Historial"],["logros","Logros","logros","Logros"],["tienda","Tienda","shop","Tienda"],["estadisticas","Estadísticas","stats","Estad."],["perfil","Perfil","perfil","Perfil"]];
+const NAV=[["dashboard","Dashboard","dash","Inicio"],["hoy","Hoy","hoy","Hoy"],["planificador","Planificador","plan","Plan"],["objetivos","Objetivos","target","Metas"],["boss","Boss","boss","Boss"],["historial","Historial","hist","Historial"],["logros","Logros","logros","Logros"],["tienda","Tienda","shop","Tienda"],["estadisticas","Estadísticas","stats","Estad."],["perfil","Perfil","perfil","Perfil"]];
 function header(title,sub,btn=true){
   return `<div class="mob-head"><svg class="brand-mark" viewBox="0 0 40 40"><path d="M20 2l15 7v11c0 9-6.5 15.5-15 18C11.5 35.5 5 29 5 20V9z" fill="none" stroke="url(#g-gold)" stroke-width="2"/><path d="M20 9l3 7h7l-5.5 4.5 2 7.5L20 23.5 13.5 28l2-7.5L10 16h7z" fill="url(#g-vio)"/></svg><b>LIFE RPG</b></div>
   <div class="top"><div><h1>${title}</h1>${sub?`<p>${sub}</p>`:""}</div>${btn?`<button class="btn primary" data-add="${todayKey()}">${ico("plus")} Agregar actividad</button>`:""}</div>`+
@@ -173,7 +181,7 @@ function vDashboard(s){
   <div class="grid2">
     <section class="panel"><div class="panel-h"><h2>Actividades de hoy</h2><button class="link" data-go="hoy">Ver día</button></div>${dayList(T,s)}</section>
     <div class="col">
-      ${dashBoss()}${dashChest(s)}${dashSaving()}${dashMonthGoals()}
+      ${dashBoss()}${dashPlans()}${dashChest(s)}${dashSaving()}${dashMonthGoals()}
       <section class="panel"><div class="panel-h"><h2>Próximos objetivos</h2></div>${goals(s)}</section>
       <section class="panel"><div class="panel-h"><h2>Logros recientes</h2><button class="link" data-go="logros">Ver todos</button></div>
       ${recent.length?`<div class="ach-list">${recent.map(([id,k])=>{const a=ACH.find(x=>x.id===id);return `<div class="ach"><div class="medal">${medal(true)}</div><div><b>${a.name}</b><span>${fmtShort(k)} · ${a.desc}</span></div></div>`}).join("")}</div>`:`<div class="empty" style="padding:10px">Tu primer logro llega con tu primera actividad.</div>`}
@@ -186,8 +194,9 @@ function vHoy(s){
   const T=todayKey(); const k=state.todayView||T; const isT=k===T;
   return header(isT?`Hoy <span>—</span> ${fmtLong(k)}`:`${cap(fmtWeek(k))} <span>—</span> ${fmtLong(k)}`,isT?"Registra lo que hiciste hoy. Todo queda guardado con esta fecha.":"Estás viendo un día anterior. Puedes agregar algo que olvidaste registrar.",false)+`
   <div class="top" style="align-items:center"><div class="cal-h"><button class="btn sm" data-dayshift="-1" aria-label="Día anterior">${ico("left").replace("<svg","<svg width='16' height='16'")}</button><button class="btn sm" data-dayshift="1" ${isT?"disabled":""} aria-label="Día siguiente">${ico("right").replace("<svg","<svg width='16' height='16'")}</button>${isT?"":`<button class="btn sm ghost" data-dayshift="0">Volver a hoy</button>`}</div>
-  <button class="btn primary" style="display:inline-flex" data-add="${k}">${ico("plus")} Agregar actividad</button></div>
-  <div class="grid2"><section class="panel"><div class="panel-h"><h2>Registro del día</h2></div>${dayList(k,s)}</section>
+  <div class="hoy-btns">${isT?`<button class="btn" data-fnew>${ico("focus")} Iniciar enfoque</button>`:""}<button class="btn primary" style="display:inline-flex" data-add="${k}">${ico("plus")} Agregar actividad</button></div></div>
+  ${isT?planTodayPanel():""}
+  <div class="grid2"><section class="panel"><div class="panel-h"><h2>${isT?"Actividades realizadas":"Registro del día"}</h2></div>${dayList(k,s)}</section>
   <section class="panel"><div class="panel-h"><h2>Categorías del día</h2></div><div class="hbars">${CATS.map(c=>{const acts=(dataDays()[k]?.activities||[]).filter(a=>a.cat===c.id);const xp=acts.reduce((t,a)=>t+a.xp,0);return `<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${Math.min(xp/150,1)*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${xp?`+${xp} XP`:"—"}</span></div>`}).join("")}</div>
   <p style="color:var(--muted);font-size:13px;margin:16px 0 0">Completa las 4 categorías en un día para ganar <b style="color:var(--gold)">+${FULL_DAY_BONUS} XP</b> de bonus.</p></section></div>`;
 }
@@ -208,7 +217,7 @@ function vHistorial(s){
   <div class="grid2"><section class="panel"><div class="panel-h"><div class="cal-h"><button class="btn sm" data-month="${mk(-1)}" aria-label="Mes anterior">${ico("left").replace("<svg","<svg width='16' height='16'")}</button><h2>${monthName}</h2><button class="btn sm" data-month="${mk(1)}" ${mk(1)>T.slice(0,7)?"disabled":""} aria-label="Mes siguiente">${ico("right").replace("<svg","<svg width='16' height='16'")}</button></div><span class="chip num">${nf(mXP)} XP · ${mDays} días</span></div>
   <div class="cal">${cells}</div>
   <div class="legend">${CATS.map(c=>`<span><i style="background:var(--c-${c.id})"></i>${c.name}</span>`).join("")}<span>Más violeta = más XP</span></div></section>
-  <section class="panel"><div class="panel-h"><div><div class="eyebrow">${cap(fmtWeek(sel))}</div><h2 style="margin-top:2px">${fmtLong(sel)}</h2></div>${state.demo?"":`<button class="btn sm" data-add="${sel}">${ico("plus").replace("<svg","<svg width='14' height='14'")} Agregar</button>`}</div>${dayList(sel,s)}</section></div>`;
+  <section class="panel"><div class="panel-h"><div><div class="eyebrow">${cap(fmtWeek(sel))}</div><h2 style="margin-top:2px">${fmtLong(sel)}</h2></div>${state.demo?"":`<button class="btn sm" data-add="${sel}">${ico("plus").replace("<svg","<svg width='14' height='14'")} Agregar</button>`}</div>${dayList(sel,s)}${planHistSection(sel)}</section></div>`;
 }
 
 function vLogros(s){
@@ -234,7 +243,7 @@ function vStats(s){
   <div style="overflow-x:auto"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="XP diaria de los últimos 30 días">${grid}${bars}${xl}</svg></div></section>
   <div class="grid2"><section class="panel"><div class="panel-h"><h2>XP por categoría</h2></div><div class="hbars">${CATS.map(c=>`<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${s.catXP[c.id]/maxC*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${nf(s.catXP[c.id])} XP</span></div>`).join("")}</div>
   <div class="hbars" style="margin-top:18px">${CATS.map(c=>`<div class="hbar"><span style="color:var(--muted)">${c.name}</span><span class="num" style="color:var(--muted);font-size:12.5px">${s.cnt[c.id]} actividades · ${nf(s.catMin[c.id]/60)} h</span><span class="v num">Nv ${s.catLv[c.id]}</span></div>`).join("")}</div></section>
-  <section class="panel"><div class="panel-h"><h2>Por día de la semana</h2></div><div class="hbars">${["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].map((d,i)=>`<div class="hbar"><span>${d}</span><div class="track"><i style="width:${wd[i]/maxW*100}%;background:var(--violet)"></i></div><span class="v num">${nf(wd[i])} XP</span></div>`).join("")}</div></section></div>${goldStats()}`;
+  <section class="panel"><div class="panel-h"><h2>Por día de la semana</h2></div><div class="hbars">${["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"].map((d,i)=>`<div class="hbar"><span>${d}</span><div class="track"><i style="width:${wd[i]/maxW*100}%;background:var(--violet)"></i></div><span class="v num">${nf(wd[i])} XP</span></div>`).join("")}</div></section></div>${goldStats()}${planStats()}`;
 }
 
 function vPerfil(s){
@@ -257,7 +266,7 @@ function vPerfil(s){
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
-  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
+  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
   <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
   </div></div>`;
@@ -279,7 +288,8 @@ function renderModal(){
   const root=document.getElementById("modalRoot"); if(!form){root.innerHTML=dlg?dlgHTML():"";return}
   const xp=actXP(form.min,form.diff);
   root.innerHTML=`<div class="scrim" id="scrim"><form class="modal" id="addForm" role="dialog" aria-modal="true" aria-labelledby="mTitle">
-  <div><div class="eyebrow">${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">${form.editId?"Editar actividad":"Nueva actividad"}</h2></div>
+  <div><div class="eyebrow">${form.fromFocus?"Sesión de enfoque · ":""}${form.date===todayKey()?"Hoy":cap(fmtWeek(form.date))} · ${fmtLong(form.date)}</div><h2 id="mTitle">${form.editId?"Editar actividad":"Nueva actividad"}</h2></div>
+  ${form.fromFocus&&form.fromFocus.overlap>0?`<div class="demo"><span>Esta sesión se superpone ${form.fromFocus.overlap} min con otra ya guardada: esos minutos no se cuentan dos veces.</span></div>`:""}
   <div class="field"><label>Categoría</label><div class="seg">${CATS.map(c=>`<button type="button" class="c-${c.id}" data-fcat="${c.id}" aria-pressed="${form.cat===c.id}">${ico(c.id)}${c.name}</button>`).join("")}</div><small style="color:var(--muted);font-size:12px">${CAT[form.cat].hint}</small></div>
   <div class="field"><label for="fTitle">¿Qué hiciste?</label><input class="inp" id="fTitle" maxlength="80" placeholder="Ej.: Clase 4 del curso de React" value="${esc(form.title)}"></div>
   <div class="row2"><div class="field"><label for="fMin">Minutos</label><input class="inp num" id="fMin" type="number" min="1" max="240" step="1" value="${form.min}"></div>
@@ -303,8 +313,8 @@ document.addEventListener("submit",e=>{
   if(!(min>=1&&min<=240)){form.err="Los minutos tienen que estar entre 1 y 240.";renderModal();return}
   if(form.date>todayKey()){form.err="No puedes registrar días futuros.";renderModal();return}
   const a={cat:form.cat,title:form.title.trim(),min,diff:form.diff,xp:actXP(min,form.diff),note:form.note.trim()};
-  const k=form.date, editId=form.editId; form=null; renderModal();
-  if(editId) editActivity(editId,k,a); else addActivity(k,a);
+  const k=form.date, editId=form.editId, useId=form.useId; form=null; renderModal();
+  if(editId) editActivity(editId,k,a); else addActivity(k,a,useId);
 });
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&form){form=null;renderModal()}else if(e.key==="Escape"&&dlg&&!dlg.busy){closeDlg()}});
 
@@ -328,7 +338,7 @@ document.addEventListener("click",e=>{
   if(t.id==="resetNo"){state.confirmReset=false;render();return}
   if(t.id==="resetYes"){const at=nowISO();commitRows([...state.rows.values()].filter(r=>!r.deleted_at).map(r=>({...r,deleted_at:at,updated_at:at})));state.confirmReset=false;toast("Progreso borrado.");render();return}
 });
-document.getElementById("fab").addEventListener("click",()=>openAdd(state.route==="historial"?state.histSel||todayKey():state.route==="hoy"?state.todayView||todayKey():todayKey()));
+document.getElementById("fab").addEventListener("click",()=>state.route==="planificador"?openPlanEditor(state.planSel||todayKey()):openAdd(state.route==="historial"?state.histSel||todayKey():state.route==="hoy"?state.todayView||todayKey():todayKey()));
 
 
 /* ============ Copia de seguridad ============ */
@@ -340,7 +350,7 @@ function backupPanel(){
   const P=bk.pending;
   if(P){
     const cur=Object.keys(state.days).length;
-    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}${P.bosses.length?` · ${P.bosses.length} Bosses`:""}</span></div>
+    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}${P.bosses.length?` · ${P.bosses.length} Bosses`:""}${P.plans.length?` · ${P.plans.length} planificaciones`:""}${P.focus.length?` · ${P.focus.length} sesiones de enfoque`:""}</span></div>
     <b>${P.first?`Del ${fmtLong(P.first)} al ${fmtLong(P.last)}`:"Sin actividades"}</b>
     <span style="font-size:13px;color:var(--muted)">${P.profile.name?`Personaje: ${esc(P.profile.name)}. `:""}${P.skipped?`Se omitirán ${P.skipped} registros inválidos. `:""}${cur?`Ahora tienes ${cur} días guardados. <b style="color:var(--fg)">Combinar</b> suma lo del archivo sin borrar nada. <b style="color:var(--fg)">Reemplazar</b> deja solo lo del archivo.`:"No tienes datos guardados, así que se cargará todo el archivo."}</span>
     ${bk.replaceAsk?`<div class="confirm" style="flex-wrap:wrap;margin-top:4px">Se borrarán tus ${cur} días actuales y quedará solo el archivo. ¿Seguro? <button class="btn sm danger" id="impReplaceYes">Sí, reemplazar</button><button class="btn sm ghost" id="impReplaceNo">Volver</button></div>`
@@ -354,7 +364,7 @@ function exportJSON(){
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
   const P=state.profile, profile={name:P.name||"",motto:P.motto||"",updated_at:P.updated_at};
   for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) profile[k]=P[k];
-  return JSON.stringify({app:"life-rpg",version:4,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport()},null,2);
+  return JSON.stringify({app:"life-rpg",version:5,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport()},null,2);
 }
 /** Oro, tienda, objetivos y cofres. Lo que espera al servidor se exporta como ya hecho, igual que se ve en pantalla. */
 function ecoExport(){
@@ -403,9 +413,9 @@ function parseBackup(text){
     }
   }
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
-  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j);
-  skipped+=eco.skipped+bs.skipped;
-  return {rows,...eco,bosses:bs.bosses,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
+  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j);
+  skipped+=eco.skipped+bs.skipped+pl.skipped;
+  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
 }
 /* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
 const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -499,11 +509,12 @@ function applyImport(mode){
   }
   if(profChanged) saveProfile();
   const bossRes=importBosses(P,mode,at);
+  const planRes=importPlans(P,mode,at);
   const eco=importEco(P,mode,at);
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
-  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`].filter(Boolean);
+  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`,planRes.plans&&`${planRes.plans} planificaciones`,planRes.focus&&`${planRes.focus} sesiones de enfoque`].filter(Boolean);
   if(ex.length) toast(`También se importaron ${ex.join(", ")}.`);
   if(eco.skippedBuys) toast(`${eco.skippedBuys} compra${eco.skippedBuys===1?"":"s"} del archivo no se repitió: la recompensa ya no está activa o no alcanza el Oro.`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) {toast(`Logros actualizados según tu historial.`);break}
@@ -514,7 +525,7 @@ document.addEventListener("change",e=>{
   const f=e.target.files[0]; e.target.value="";
   if(f.size>20*1024*1024){bk.err="El archivo es demasiado grande para ser un respaldo.";render();return}
   const r=new FileReader();
-  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length&&!P.bosses.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
+  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length&&!P.bosses.length&&!P.plans.length&&!P.focus.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
   r.onerror=()=>{bk.err="No se pudo leer el archivo.";render()};
   r.readAsText(f);
 });
@@ -611,13 +622,14 @@ function render(){
   if(!Object.keys(state.days).length && !form){ if(!state.demoDays) state.demoDays=makeDemo(); state.demo=true } else state.demo=false;
   const s=compute();
   document.getElementById("nav").innerHTML=NAV.map(([id,label,icon,short])=>`<a href="#${id}" data-go="${id}" class="${state.route===id?"on":""}" ${state.route===id?'aria-current="page"':""}>${ico(icon)}<span class="nl">${label}</span><span class="ns">${short}</span></a>`).join("");
-  const v={dashboard:vDashboard,hoy:vHoy,objetivos:vObjetivos,boss:vBoss,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
+  const v={dashboard:vDashboard,hoy:vHoy,planificador:vPlanner,objetivos:vObjetivos,boss:vBoss,historial:vHistorial,logros:vLogros,tienda:vTienda,estadisticas:vStats,perfil:vPerfil}[state.route]||vDashboard;
   const keepFocus=document.activeElement&&document.activeElement.id; const caret=document.activeElement?.selectionStart;
   document.getElementById("view").innerHTML=v(s);
   if(keepFocus&&(keepFocus==="pName"||keepFocus==="pMotto"||keepFocus==="accEmail")){const el=document.getElementById(keepFocus);if(el){el.focus();try{el.setSelectionRange(caret,caret)}catch(e){}}}
   const pill=document.getElementById("savePill");pill.className="save-pill"+(state.mode==="device"&&Sync.info.status!=="error"?" ok":"");pill.lastElementChild.textContent=state.mode==="device"?(Sync.info.signedIn?Sync.label():(navigator.onLine?"Guardado en este dispositivo":"Sin conexión · guardado aquí")):"Sin guardado disponible";
   document.getElementById("sideDate").textContent=cap(fromKey(todayKey()).toLocaleDateString("es",{weekday:"long",day:"numeric",month:"long"}));
   bossAfterRender();
+  focusAfterRender();
 }
 document.getElementById("nav").addEventListener("click",e=>{const a=e.target.closest("a[data-go]");if(a){e.preventDefault();go(a.dataset.go)}});
 const h=(location.hash||"").slice(1); if(NAV.some(n=>n[0]===h)) state.route=h;

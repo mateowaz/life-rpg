@@ -18,6 +18,8 @@ const Sync = (() => {
     ["goals", "monthly_goals", "id", "goal:"],
     ["coins", "coin_transactions", "user_id,id", "coin:"],
     ["bosses", "monthly_bosses", "user_id,id", "boss:"],
+    ["plans", "planned_activities", "user_id,id", "plan:"],   // versión 5
+    ["focus", "focus_sessions", "user_id,id", "focus:"],      // versión 5
   ];
   // Tablas nuevas que se bajan: local, Supabase, columnas, orden secundario
   const PULL = [
@@ -27,7 +29,13 @@ const Sync = (() => {
     ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
     ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
     ["bosses", "monthly_bosses", "id,year,month,name,description,boss_type,category,target_hp,manual_progress,coin_reward,title_reward,theme,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["focus", "focus_sessions", "id,planned_activity_id,device_id,title,category,mode,status,started_at,segment_started_at,segments,focus_seconds,pomodoro,ended_at,created_at,updated_at,deleted_at,synced_at", "id"],
   ];
+
+  // Tablas de la versión 5: si todavía no se ejecutó 004 en Supabase, se saltean sin frenar el resto
+  const OPTIONAL = new Set(["planned_activities", "focus_sessions"]);
+  const missing = (e) => e && (e.code === "PGRST205" || e.code === "42P01" || /could not find the table|does not exist/i.test(String(e.message || "")));
 
   let sb = null, session = null, linked = null;
   let status = "local"; // local | confirm | syncing | synced | offline | error
@@ -68,7 +76,8 @@ const Sync = (() => {
     if (!linked) {
       const n = (await Store.allRows()).filter((r) => !r.deleted_at).length
         + (await Store.all("items")).filter((r) => !r.deleted_at).length + (await Store.all("goals")).filter((r) => !r.deleted_at).length
-        + (await Store.all("bosses")).filter((r) => !r.deleted_at).length;
+        + (await Store.all("bosses")).filter((r) => !r.deleted_at).length
+        + (await Store.all("plans")).filter((r) => !r.deleted_at).length + (await Store.all("focus")).filter((r) => !r.deleted_at).length;
       if (n > 0) { uploadCount = n; status = "confirm"; emit(); return; }
       await Store.setMeta("account", id); linked = id;
     }
@@ -87,6 +96,8 @@ const Sync = (() => {
         .on("postgres_changes", { event: "*", schema: "public", table: "monthly_goals", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "level_chests", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "monthly_bosses", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "planned_activities", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .on("postgres_changes", { event: "*", schema: "public", table: "focus_sessions", filter: `user_id=eq.${uid()}` }, () => changed(500))
         .subscribe();
     } catch (e) { channel = null; }
   }
@@ -155,7 +166,7 @@ const Sync = (() => {
       if (e3) throw e3;
       if (prof && (await Store.applyRemoteProfile(prof))) changedLocal = true;
 
-      // 4. Tablas nuevas: subir recompensas, objetivos, Oro derivado y Bosses
+      // 4. Tablas nuevas: subir recompensas, objetivos, Oro derivado, Bosses, planificaciones y sesiones de enfoque
       for (const [t, table, conflict, P] of PUSH) {
         const mine = pend.filter((p) => p.id.startsWith(P));
         for (let i = 0; i < mine.length; i += CHUNK) {
@@ -165,6 +176,7 @@ const Sync = (() => {
           if (t === "bosses") rows = rows.map(({ claimed_at, ...r }) => r);                // claimed_at solo lo escribe claim_boss
           if (rows.length) {
             const { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
+            if (error && OPTIONAL.has(table) && missing(error)) break;    // quedan pendientes hasta que exista la tabla
             if (error) throw error;
           }
           await Store.clearPending(part);
@@ -206,6 +218,7 @@ const Sync = (() => {
         for (;;) {
           const { data, error } = await sb.from(table).select(cols).gt("synced_at", sinceT)
             .order("synced_at", { ascending: true }).order(second, { ascending: true }).range(off, off + PAGE - 1);
+          if (error && OPTIONAL.has(table) && missing(error)) { max = cur; break; }
           if (error) throw error;
           if (data.length) {
             // compras y cofres: siempre manda el servidor
