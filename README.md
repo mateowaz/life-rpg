@@ -10,6 +10,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `economy.js`: reglas de Oro, cofres por nivel y objetivos mensuales. No toca XP, niveles ni logros.
 - `tesoro.js`: pantallas de Tienda (Recompensas, Wishlist, Historial), Objetivos y Cofres.
 - `boss.js`: Boss mensual (reglas de daño y estado, pantalla Boss, panel del Dashboard, reclamo y respaldo).
+- `routines.js`: Rutinas (misiones recurrentes): el generador de misiones, la pestaña Rutinas, el formulario, pausar, reactivar, duplicar, eliminar y "¿Qué quieres modificar?".
 - `planner.js`: Planificador (Calendario, Agenda, panel de Hoy, Próximas misiones, completar, reprogramar, omitir, historial y estadísticas de planificación).
 - `focus.js`: Temporizador de enfoque (sesión libre y Pomodoro, pausa, barra de sesión activa, guardado como actividad).
 - `nav.js`: navegación. En celular: barra inferior (Inicio, Hoy, Plan, Boss, Más) y hoja "Más". Botón Atrás con historial (`pushState`/`popstate`) y enlaces internos de las notificaciones.
@@ -27,6 +28,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `supabase/004_planificador_enfoque.sql`: tablas `planned_activities` y `focus_sessions` y el trigger `protect_focus`. Se ejecuta una vez, después de `003`. Hasta ejecutarlo, la app sigue sincronizando todo lo demás y guarda planificaciones y sesiones solo en el dispositivo.
 - `supabase/005_navegacion_notificaciones.sql`: recordatorio en `planned_activities`, dispositivos, preferencias, avisos y entregas por dispositivo, y las tareas de `pg_cron`. Se ejecuta una vez, después de `004`.
 - `supabase/006_finanzas.sql`: agrega la categoría Finanzas. Revisa la restricción de categoría de 5 tablas conocidas y se detiene con un mensaje si algo no es lo esperado; después las reemplaza, actualiza `cat_name` y hace que cofres y Boss usen `private.activity_xp` (la misma fórmula que la app). Se ejecuta una vez, después de `005`.
+- `supabase/007_rutinas.sql`: tabla `recurring_plans`, 3 columnas en `planned_activities` (`recurring_plan_id`, `recurrence_date`, `recurrence_edited`) y `private.enqueue_due` sin aviso de "atrasada" para misiones de rutina. Se ejecuta una vez, después de `006`. Hasta ejecutarla, las rutinas y sus misiones quedan en el dispositivo (en la cola) y todo lo demás sigue sincronizando.
 - `supabase/functions/send-push/index.ts`: Edge Function que cifra y entrega los avisos (Web Push). Sus claves son secretos de la función.
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
 - `tests/`: pruebas automáticas (ver "Pruebas").
@@ -59,6 +61,13 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - El tiempo de enfoque no da XP. Al terminar se guarda como actividad (libre) o se usa para completar su planificación (sin sumar dos veces los minutos que se superponen).
 - En el servidor, `protect_focus` congela una sesión finalizada o descartada, recalcula `focus_seconds` desde los tramos y descarta tramos inválidos.
 
+## Rutinas
+- Una rutina es una plantilla: cada día que le toca se convierte en una planificación normal, de hoy a 30 días. Nunca crea días pasados.
+- El id de cada día sale de la familia de la rutina (`series_id`) y la fecha, así dos dispositivos generan la misma fila.
+- Una misión sin tocar la maneja la rutina; una que editaste, reprogramaste, omitiste, cancelaste o eliminaste queda como tuya (`recurrence_edited`). Lo completado y lo pasado nunca cambian.
+- "Esta y las siguientes" corta la rutina en dos tramos de la misma familia; las misiones futuras sin tocar conservan id y fecha y pasan al tramo nuevo. "Duplicar" crea otra familia.
+- Una rutina no da XP ni Oro: el progreso llega al completar cada misión, como siempre.
+
 ## Navegación en celular
 - Barra inferior con Inicio, Hoy, Plan, Boss y Más. Más abre una hoja con Historial, Estadísticas, Objetivos, Tienda, Logros y Perfil. En computadora el menú lateral no cambia.
 - Atrás de Android: si hay una hoja o un diálogo abierto, lo cierra primero. Si no, vuelve a la pantalla anterior; desde Inicio sale de la app.
@@ -80,7 +89,7 @@ Rama `main`, carpeta `/` (Settings → Pages).
 
 ## Pruebas
 - `node --test "tests/*.test.js"`: reglas de la app (XP, niveles, rangos, rachas, logros, Oro, cofres, objetivos y Boss) y comprobaciones de `sw.js` (todo lo que carga `index.html` está en `SHELL`, los archivos existen y `VERSION` cambia si cambió la app). No hace falta instalar nada.
-- `tests/sql/run.sh`: ejecuta `schema.sql` y las migraciones 002 a 006 en un Postgres de prueba vacío (imagen `supabase/postgres`) y comprueba RLS, `buy_reward`, `claim_goal`, `open_chest`, `claim_boss`, `protect_boss`, `protect_focus`, `push_tick()` con filas corruptas y que `private.activity_xp` da lo mismo que `actXP` en las 3.600 combinaciones. Nunca usa el proyecto real.
+- `tests/sql/run.sh`: ejecuta `schema.sql` y las migraciones 002 a 007 en un Postgres de prueba vacío (imagen `supabase/postgres`) y comprueba RLS, `buy_reward`, `claim_goal`, `open_chest`, `claim_boss`, `protect_boss`, `protect_focus`, `push_tick()` con filas corruptas y que `private.activity_xp` da lo mismo que `actXP` en las 3.600 combinaciones. Nunca usa el proyecto real.
 - `tests/cases/xp.json`: casos de XP que usan las dos pruebas, así la fórmula de la app y la de Supabase no pueden separarse.
 - En GitHub corren solas en cada PR (pestaña Actions).
 

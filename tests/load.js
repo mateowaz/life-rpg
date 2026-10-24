@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
-const FILES = ["game.js", "storage.js", "economy.js", "tesoro.js", "boss.js"];
+const FILES = ["game.js", "storage.js", "economy.js", "tesoro.js", "boss.js", "routines.js"];
 
 function loadRules() {
   const noop = () => {};
