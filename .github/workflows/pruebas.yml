@@ -54,5 +54,5 @@ jobs:
           node-version: 22
       - name: Cliente psql
         run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
-      - name: Migraciones 001 a 006 y pruebas de SQL
+      - name: Migraciones 001 a 008 y pruebas de SQL
         run: tests/sql/run.sh

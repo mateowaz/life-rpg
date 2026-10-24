@@ -17,9 +17,10 @@
      focus       sesiones de enfoque (versión 5), con sus tramos de tiempo
      ops         compras, reclamos y cofres que esperan la confirmación del servidor
      nout        llamadas de notificaciones que esperan conexión (versión 6). Las preferencias van en meta "nprefs"
-     routines    rutinas (versión 7). Sus misiones son planificaciones normales en plans */
+     routines    rutinas (versión 7). Sus misiones son planificaciones normales en plans
+     dayplans    plan del día aceptado (versión 8): una fila por fecha, solo ids y ajustes */
 const Store = (() => {
-  const NAME = "liferpg", VERSION = 7;
+  const NAME = "liferpg", VERSION = 8;
   let db = null;
   const mem = { rows: new Map(), pending: new Map(), meta: new Map(), ops: new Map(), nout: new Map() }; // si el navegador no deja guardar
   /* Tablas nuevas (versión 3). prefix = cómo se anotan en la cola de pendientes; sin prefix nunca se suben
@@ -34,6 +35,7 @@ const Store = (() => {
     plans:     { key: "id",    prefix: "plan:" },   // versión 5
     focus:     { key: "id",    prefix: "focus:" },  // versión 5
     routines:  { key: "id",    prefix: "routine:" },// versión 7
+    dayplans:  { key: "id",    prefix: "dayplan:" },// versión 8
   };
   for (const t in T) mem[t] = new Map();
 
@@ -64,7 +66,15 @@ const Store = (() => {
     const str = (v, n, d) => (typeof v === "string" ? v.slice(0, n) : d);
     return { name: str(p.name, 40, ""), motto: str(p.motto, 80, ""), avatar_initials: str(p.avatar_initials, 2, ""), avatar_icon: str(p.avatar_icon, 16, "initials"),
       avatar_frame: str(p.avatar_frame, 16, "simple"), avatar_bg: str(p.avatar_bg, 16, "violet"), avatar_badge: str(p.avatar_badge, 16, "none"),
-      equipped_title: str(p.equipped_title, 64, ""), featured_badges: Array.isArray(p.featured_badges) ? p.featured_badges.filter((x) => typeof x === "string").slice(0, 3) : [] };
+      equipped_title: str(p.equipped_title, 64, ""), featured_badges: Array.isArray(p.featured_badges) ? p.featured_badges.filter((x) => typeof x === "string").slice(0, 3) : [],
+      day_plan_prefs: dpPrefsObj(p.day_plan_prefs) };   // versión 8
+  }
+  /** Preferencias del Plan del Día: solo un objeto chico de valores simples (lo valida dayplan.js al leerlo) */
+  function dpPrefsObj(v) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const o = {};
+    for (const k of ["enabled", "minutes", "energy", "focus", "finanzas", "maxOverdue"]) if (["boolean", "number", "string"].includes(typeof v[k])) o[k] = typeof v[k] === "string" ? v[k].slice(0, 32) : v[k];
+    return o;
   }
   const iso = (v) => { const t = typeof v === "number" ? v : Date.parse(v); return new Date(isNaN(t) ? Date.now() : t).toISOString(); };
   const time = (v) => { const t = Date.parse(v); return isNaN(t) ? 0 : t; };
@@ -86,6 +96,16 @@ const Store = (() => {
   const DERIVED = ["activity", "full_day", "streak"];
   const isoN = (v) => (v ? iso(v) : null);
   const remOf = (r) => (r.reminder_minutes === null || r.reminder_minutes === undefined || r.reminder_minutes === "" || !(+r.reminder_minutes >= 0 && +r.reminder_minutes <= 1440) ? null : Math.round(+r.reminder_minutes));
+  /** Versión 8: prioridad, energía y duración flexible. En una planificación (plan = true) vacío = hereda;
+      en una rutina, el valor por defecto. Flexible sin mínimo vuelve a fija. */
+  function dpCols(r, plan) {
+    const one = (v, list, d) => (list.includes(v) ? v : d);
+    const min = Math.round(+r.minimum_minutes), okMin = min >= 1 && min <= 240 ? min : null;
+    let mode = one(r.duration_mode, ["fixed", "flexible"], plan ? null : "fixed");
+    if (mode === "flexible" && !okMin) mode = plan ? null : "fixed";
+    return { priority: one(r.priority, ["low", "normal", "high", "critical"], plan ? null : "normal"), energy_required: one(r.energy_required, ["low", "normal", "high"], plan ? null : "normal"),
+      duration_mode: mode, minimum_minutes: mode === "flexible" ? okMin : null };
+  }
   /** Normaliza filas de las tablas nuevas: fechas en un solo formato, sin campos de más */
   function cleanT(t, r) {
     switch (t) {
@@ -114,6 +134,8 @@ const Store = (() => {
         recurring_plan_id: r.recurring_plan_id && r.recurrence_date ? String(r.recurring_plan_id).toLowerCase() : null,
         recurrence_date: r.recurring_plan_id && r.recurrence_date ? String(r.recurrence_date).slice(0, 10) : null,
         recurrence_edited: !!(r.recurring_plan_id && r.recurrence_date && r.recurrence_edited),
+        ...dpCols(r, true),   // versión 8: vacío = hereda de la rutina o el valor por defecto
+        due_date: r.due_date && /^\d{4}-\d{2}-\d{2}/.test(String(r.due_date)) ? String(r.due_date).slice(0, 10) : null,
         created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
       case "routines": {   // versión 7
         const wd = [...new Set((Array.isArray(r.weekdays) ? r.weekdays : []).map(Number).filter((d) => Number.isInteger(d) && d >= 1 && d <= 7))].sort((a, b) => a - b);
@@ -121,6 +143,7 @@ const Store = (() => {
         return { id: r.id, series_id: r.series_id || r.id, title: String(r.title || "").slice(0, 80), description: String(r.description || "").slice(0, 160), category: r.category, weekdays: wd,
           start_date: String(r.start_date).slice(0, 10), end_date: r.end_date ? String(r.end_date).slice(0, 10) : null, time, planned_minutes: Math.round(+r.planned_minutes), intensity: +r.intensity,
           note: String(r.note || "").slice(0, 120), reminder_minutes: time ? remOf(r) : null, active: r.active !== false,
+          ...dpCols(r, false),   // versión 8
           created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
       }
       case "focus": return { id: r.id, planned_activity_id: r.planned_activity_id || null, device_id: String(r.device_id || ""), title: String(r.title || "").slice(0, 80),
@@ -128,6 +151,14 @@ const Store = (() => {
         segments: Array.isArray(r.segments) ? r.segments.filter((x) => Array.isArray(x) && x.length === 2).map(([a, b]) => [iso(a), iso(b)]) : [],
         focus_seconds: Math.max(0, Math.round(+r.focus_seconds || 0)), pomodoro: r.pomodoro && typeof r.pomodoro === "object" ? r.pomodoro : null, ended_at: isoN(r.ended_at),
         created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      case "dayplans": {   // versión 8
+        const U = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const items = (Array.isArray(r.items) ? r.items : []).filter((x) => x && U.test(x.id) && Number.isFinite(+x.m)).slice(0, 30).map((x) => ({ id: String(x.id).toLowerCase(), m: Math.max(1, Math.min(240, Math.round(+x.m))) }));
+        return { id: r.id, date: String(r.date).slice(0, 10), available_minutes: Math.max(0, Math.min(1440, Math.round(+r.available_minutes) || 0)),
+          energy: ["low", "normal", "high"].includes(r.energy) ? r.energy : "normal", focus_kind: ["auto", "category", "goal", "boss"].includes(r.focus_kind) ? r.focus_kind : "auto",
+          focus_ref: r.focus_ref ? String(r.focus_ref).slice(0, 64) : null, items, removed: (Array.isArray(r.removed) ? r.removed : []).filter((x) => U.test(x)).slice(0, 100).map((x) => String(x).toLowerCase()),
+          accepted_at: isoN(r.accepted_at), closed_at: isoN(r.closed_at), created_at: iso(r.created_at), updated_at: iso(r.updated_at), deleted_at: isoN(r.deleted_at) };
+      }
       case "chests": return { level: +r.level, name: r.name, gold: +r.gold, claimed_at: iso(r.claimed_at), updated_at: iso(r.updated_at || r.claimed_at) };
     }
     return r;
@@ -266,6 +297,7 @@ const Store = (() => {
     async applyRemoteProfile(p) {
       const local = await this.getProfile();
       if (local.updated_at && time(p.updated_at) <= time(local.updated_at)) return false;
+      if (!("day_plan_prefs" in p)) p = { ...p, day_plan_prefs: local.day_plan_prefs };   // servidor sin 008: se conservan las de aquí
       await this.saveProfile(p, true);
       if (db) await tx(["pending"], "readwrite", (t) => { t.objectStore("pending").delete("profile"); });
       else mem.pending.delete("profile");
@@ -296,6 +328,7 @@ const Store = (() => {
       for (const r of await this.all("plans")) entries.push({ id: "plan:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("focus")) entries.push({ id: "focus:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("routines")) entries.push({ id: "routine:" + r.id, updated_at: r.updated_at });
+      for (const r of await this.all("dayplans")) entries.push({ id: "dayplan:" + r.id, updated_at: r.updated_at });
       for (const r of await this.all("coins")) if (DERIVED.includes(r.source)) entries.push({ id: "coin:" + r.id, updated_at: r.updated_at });
       const np = await getMeta("nprefs"); if (np && np.updated_at) entries.push({ id: "nprefs", updated_at: np.updated_at });
       if (!db) { for (const e of entries) mem.pending.set(e.id, e); return; }
@@ -350,14 +383,15 @@ const Store = (() => {
       const wins = (l, r) => !l || force || (t === "focus" && ended(l) && !ended(r) ? false : time(r.updated_at) > time(l.updated_at) || (sticky && r.claimed_at && !l.claimed_at));
       // Planificaciones bajadas sin columnas que el servidor todavía no tiene (reminder_minutes sin 005; las de rutina sin 007):
       // se conserva el valor local de esas columnas
-      const OPT = ["reminder_minutes", "recurring_plan_id", "recurrence_date", "recurrence_edited"];
-      const miss = t === "plans" ? new Map(remote.map((r) => [r.id, OPT.filter((k) => !(k in r))]).filter(([, ks]) => ks.length)) : null;
+      const DPC = ["priority", "energy_required", "duration_mode", "minimum_minutes"];   // versión 8 (sin 008 no llegan)
+      const OPT = t === "plans" ? ["reminder_minutes", "recurring_plan_id", "recurrence_date", "recurrence_edited", ...DPC, "due_date"] : DPC;
+      const miss = t === "plans" || t === "routines" ? new Map(remote.map((r) => [r.id, OPT.filter((k) => !(k in r))]).filter(([, ks]) => ks.length)) : null;
       const rows = remote.map((r) => cleanT(t, r));
       const merge0 = merge;
       merge = (l, r) => {
         const x = merge0(l, r), ks = miss && l && miss.get(r.id);
         if (!ks) return x;
-        const y = { ...x }; for (const k of ks) y[k] = l[k] ?? (k === "recurrence_edited" ? false : null);
+        const y = { ...x }; for (const k of ks) y[k] = l[k] ?? (k === "recurrence_edited" ? false : t === "routines" ? { priority: "normal", energy_required: "normal", duration_mode: "fixed" }[k] ?? null : null);
         return y;
       };
       if (!db) {

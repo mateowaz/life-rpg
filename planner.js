@@ -199,12 +199,16 @@ function openPlanEditor(date, id, copyOf) {
   const base = p || { title: "", category: "curso", planned_minutes: 60, intensity: 2, note: "", time: null, date: date && date >= T ? date : T };
   const rem = p ? (p.reminder_minutes ?? null) : Notify.defaultReminder();
   dlg = { type: "planForm", id: id || null, f: { title: base.title, cat: base.category, min: base.planned_minutes, diff: base.intensity, note: base.note || "", time: base.time || "",
-    date: copyOf ? (base.date >= T ? base.date : T) : base.date, rem: rem === null ? "" : String(rem), remCustom: rem !== null && !Notify.REM.some(([v]) => v === String(rem)) }, origDate: p && id ? p.date : null, err: "" };
+    date: copyOf ? (base.date >= T ? base.date : T) : base.date, rem: rem === null ? "" : String(rem), remCustom: rem !== null && !Notify.REM.some(([v]) => v === String(rem)),
+    // Plan del Día (versión 8): vacío = hereda de la rutina o el valor por defecto
+    prio: base.priority ?? null, energy: base.energy_required ?? null, mode: base.duration_mode ?? null, minm: base.minimum_minutes ?? "", due: base.due_date || "",
+    dpOpen: !!(base.priority || base.energy_required || base.duration_mode || base.due_date) }, origDate: p && id ? p.date : null, err: "" };
   renderModal(); setTimeout(() => document.getElementById("plTitle")?.focus(), 30);
 }
 function readPlanForm() {
   const g = (i) => document.getElementById(i); if (!g("plTitle") || !dlg) return;
   const f = dlg.f; f.title = g("plTitle").value; f.min = g("plMin").value; f.date = g("plDate").value; f.time = g("plTime").value; f.note = g("plNote").value;
+  if (g("plMinM")) f.minm = g("plMinM").value; if (g("plDue")) f.due = g("plDue").value;
   if (g("plRem")) { f.remCustom = g("plRem").value === "custom"; if (!f.remCustom) f.rem = g("plRem").value; else if (g("plRemC")) f.rem = g("plRemC").value; }
 }
 function remField(f) {
@@ -225,6 +229,7 @@ function planForm() {
   <div class="row2"><div class="field"><label for="plMin">Duración estimada (min)</label><input class="inp num" id="plMin" type="number" min="1" max="240" step="1" value="${esc(f.min)}"></div>
   <div class="field"><label>Intensidad</label><div class="seg three">${[1, 2, 3].map((d) => `<button type="button" data-pldiff="${d}" aria-pressed="${+f.diff === d}">${DIFF[d].name}</button>`).join("")}</div></div></div>
   <div class="field"><label for="plNote">Nota (opcional)</label><input class="inp" id="plNote" maxlength="120" placeholder="Algo que quieras recordar" value="${esc(f.note)}"></div>
+  ${dpFormFields(f, dlg.id ? state.plans.get(dlg.id) : null, { prefix: "pl", due: true })}
   ${dlg.err ? `<div class="err">${dlg.err}</div>` : ""}
   <div class="modal-f"><button type="button" class="btn ghost" data-dlg-close>Cancelar</button><button type="submit" class="btn primary">${dlg.id ? "Guardar cambios" : "Planificar"}</button></div></form>`;
 }
@@ -238,10 +243,11 @@ function savePlan() {
   if (f.time && !/^\d{2}:\d{2}$/.test(f.time)) { dlg.err = "La hora no es válida."; renderModal(); return; }
   const rem = f.rem === "" || f.rem === null ? null : Math.round(+f.rem);
   if (f.time && rem !== null && !(rem >= (f.remCustom ? 1 : 0) && rem <= 1440)) { dlg.err = "El recordatorio va de 1 a 1440 minutos antes."; renderModal(); return; }
-  const at = nowISO(), old = dlg.id ? state.plans.get(dlg.id) : null;
-  const row = { ...(old || { id: Store.newId(), status: "planned", moved_from: null, created_at: at, deleted_at: null }),
+  const dp = dpFormRead(f, min, { due: true }); if (dp.err) { dlg.err = dp.err; renderModal(); return; }
+  const at = nowISO(), old = dlg.id ? state.plans.get(dlg.id) : null, newId = dlg.newId;
+  const row = { ...(old || { id: newId || Store.newId(), status: "planned", moved_from: null, created_at: at, deleted_at: null }),
     date: f.date, time: f.time || null, title: title.slice(0, 80), category: f.cat, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120),
-    reminder_minutes: f.time ? rem : null, updated_at: at, ...touched(old) };
+    reminder_minutes: f.time ? rem : null, ...dp.cols, updated_at: at, ...touched(old) };
   if (old && old.date !== f.date) row.moved_from = old.moved_from || old.date;
   dlg = null; renderModal();
   putPlans([row]);
@@ -266,8 +272,13 @@ function savePlanMove() {
   if (!p) { dlg = null; renderModal(); return; }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < todayKey()) { dlg.err = "Elige hoy o un día futuro."; dlg.date = d; dlg.time = t; renderModal(); return; }
   dlg = null; renderModal();
-  putPlans([{ ...p, date: d, time: t || null, status: "planned", moved_from: d !== p.date ? p.moved_from || p.date : p.moved_from, updated_at: nowISO(), ...touched(p) }]);
+  putPlans([planMoveRow(p, d, t, nowISO())]);
   toast(`Reprogramada para ${dayName(d).toLowerCase()}.`);
+}
+/** Reprogramar: la misma regla para el Planificador y el Plan del Día. Nueva fecha y hora, vuelve a "planificada"
+    y moved_from guarda la fecha original (la primera, aunque se mueva varias veces). */
+function planMoveRow(p, d, t, at) {
+  return { ...p, date: d, time: t || null, status: "planned", moved_from: d !== p.date ? p.moved_from || p.date : p.moved_from, updated_at: at, ...touched(p) };
 }
 function setPlanStatus(id, status) {
   const p = state.plans.get(id); if (!p || planAct(p)) { render(); return; }
@@ -287,6 +298,7 @@ function putPlans(rows) {
   for (const r of rows) state.plans.set(r.id, r);
   Store.put("plans", rows).then(() => Sync.changed()).catch(() => toast("No se pudo guardar en este dispositivo."));
   render();
+  dpAfterPlansChange();   // Plan del Día: una planificación nueva desde el plan entra en él
 }
 
 /* ============ Completar ============ */
@@ -344,6 +356,7 @@ function parsePlans(j) {
       moved_from: typeof r.moved_from === "string" && day.test(r.moved_from) ? r.moved_from : null,
       reminder_minutes: Number.isInteger(r.reminder_minutes) && r.reminder_minutes >= 0 && r.reminder_minutes <= 1440 ? r.reminder_minutes : null,   // respaldo versión 6
       ...recOf(r),                                                                                                                                  // respaldo versión 7
+      ...dpColsOf(r, true),                                                                                                                         // respaldo versión 8
       created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
   }
   for (const r of arr(j.focus_sessions)) {
@@ -363,6 +376,15 @@ function parsePlans(j) {
 function recOf(r) {
   const ok = r && typeof r.recurring_plan_id === "string" && UUIDre.test(r.recurring_plan_id) && typeof r.recurrence_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.recurrence_date);
   return ok ? { recurring_plan_id: r.recurring_plan_id.toLowerCase(), recurrence_date: r.recurrence_date, recurrence_edited: r.recurrence_edited === true } : { recurring_plan_id: null, recurrence_date: null, recurrence_edited: false };
+}
+/** Respaldo versión 8: prioridad, energía y duración flexible (planificaciones: vacío = hereda) y fecha límite */
+function dpColsOf(r, plan) {
+  const one = (v, list, d) => (list.includes(v) ? v : d), min = Math.round(+(r && r.minimum_minutes));
+  let mode = one(r && r.duration_mode, DP_MODES, plan ? null : "fixed");
+  if (mode === "flexible" && !(min >= 1 && min <= 240)) mode = plan ? null : "fixed";
+  const o = { priority: one(r && r.priority, DP_PRIO, plan ? null : "normal"), energy_required: one(r && r.energy_required, DP_ENERGY, plan ? null : "normal"), duration_mode: mode, minimum_minutes: mode === "flexible" ? min : null };
+  if (plan) o.due_date = r && typeof r.due_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.due_date) ? r.due_date : null;
+  return o;
 }
 /** Un respaldo nunca completa una planificación (eso lo hace su actividad, que tiene el mismo id) ni revive una sesión terminada. */
 function importPlans(P, mode, at) {
@@ -394,7 +416,7 @@ function planDlg(d) {
   if (d.type === "planForm") return planForm();
   if (d.type === "planMove") return planMoveForm();
   if (d.type === "planComplete") return planCompleteForm();
-  return routineDlg(d);
+  return routineDlg(d) || dayPlanDlg(d);
 }
 document.addEventListener("click", (e) => {
   const t = e.target.closest("button"); if (!t || !t.dataset) return;
@@ -420,6 +442,7 @@ document.addEventListener("click", (e) => {
   if (D.pmore !== undefined) { state.agendaDays = (state.agendaDays || 14) + 14; render(); return; }
   if (D.srange) { state.statsRange = D.srange; render(); return; }
   if (dlg && dlg.type === "planForm") {
+    if (dpFormClick(D, readPlanForm)) return;
     if (D.plcat) { readPlanForm(); dlg.f.cat = D.plcat; renderModal(); return; }
     if (D.pldiff) { readPlanForm(); dlg.f.diff = +D.pldiff; renderModal(); return; }
   }
