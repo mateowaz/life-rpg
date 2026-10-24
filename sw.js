@@ -1,6 +1,7 @@
 /* Life RPG — service worker: guarda la app para que abra sin internet y muestra las notificaciones push.
-   Cambia VERSION en cada publicación para que los teléfonos bajen la versión nueva. */
-const VERSION = "life-rpg-v7";
+   Cambia VERSION en cada publicación para que los teléfonos bajen la versión nueva (las pruebas lo comprueban).
+   Cada VERSION se guarda completa en su propio caché: la app nunca abre con archivos de dos versiones mezclados. */
+const VERSION = "life-rpg-v8";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./game.js", "./economy.js", "./storage.js", "./tesoro.js", "./boss.js", "./personaje.js", "./focus.js", "./planner.js", "./notify.js", "./nav.js", "./app.js",
   "./config.js", "./sync.js", "./vendor/supabase-2.117.2.js", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
@@ -8,8 +9,17 @@ const SHELL = [
 ];
 const FONTS = "life-rpg-fonts";
 
+// Descarga la versión completa, sin usar el caché HTTP del navegador (si falta un archivo, no se instala nada).
+// No se activa sola: espera a que la persona toque "Actualizar" o a que se cierren todas las ventanas de la app.
+// La primera vez que se instala no hay nada que esperar y se activa enseguida.
+// Desde la v7 o antes (que no sabían mostrar el aviso) se pasa sola, como se actualizaba hasta ahora.
+const LEGACY = /^life-rpg-v[1-7]$/;
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil((async () => {
+    const c = await caches.open(VERSION);
+    await c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })));
+    if ((await caches.keys()).some((k) => LEGACY.test(k))) await self.skipWaiting();
+  })());
 });
 
 self.addEventListener("activate", (e) => {
@@ -37,13 +47,13 @@ self.addEventListener("fetch", (e) => {
   }
   if (url.origin !== location.origin) return;
 
-  // Archivos de la app: responde al instante desde el caché y actualiza en segundo plano
+  // Archivos de la app: siempre los de la versión instalada. Lo que no está en el caché se pide a la red
+  // pero no se guarda, así el caché de una versión nunca cambia.
   e.respondWith(caches.open(VERSION).then(async (c) => {
     const key = req.mode === "navigate" ? "./index.html" : req;
     const hit = await c.match(key, { ignoreSearch: true });
-    const net = fetch(req).then((res) => { if (res.ok) c.put(key, res.clone()); return res; }).catch(() => null);
-    if (hit) { e.waitUntil(net); return hit; }
-    return (await net) || new Response("Sin conexión", { status: 503 });
+    if (hit) return hit;
+    try { return await fetch(req); } catch (_) { return new Response("Sin conexión", { status: 503 }); }
   }));
 });
 
@@ -92,8 +102,10 @@ self.addEventListener("pushsubscriptionchange", (e) => {
 });
 
 // La app pide cerrar un aviso que ya no corresponde (por ejemplo, una misión que se completó)
+// También: la app pide activar la versión nueva cuando la persona toca "Actualizar"
 self.addEventListener("message", (e) => {
   const d = e.data || {};
+  if (d.type === "skip-waiting") { self.skipWaiting(); return; }
   if (d.type === "close" && typeof d.tag === "string") {
     e.waitUntil(self.registration.getNotifications({ tag: d.tag }).then((l) => l.forEach((n) => n.close())));
   }

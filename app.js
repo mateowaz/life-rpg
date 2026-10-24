@@ -15,7 +15,7 @@ function makeDemo(){
 /* ============ Estado y guardado ============ */
 const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:"",avatar_icon:"initials",avatar_frame:"simple",avatar_bg:"violet",avatar_badge:"none",equipped_title:"",featured_badges:[],updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
   eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null,
-  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week"};
+  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week",lastExport:null,exportSnooze:null};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity,r.category),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -39,6 +39,7 @@ const App=window.App={
       state.plans=new Map(plans.map(r=>[r.id,r])); state.focus=new Map(focus.map(r=>[r.id,r]));
       if(!state.device){state.device=(await Store.getMeta("device"))||"este-dispositivo";state.pomo=(await Store.getMeta("pomo"))||null;state.wakeOn=!!(await Store.getMeta("wakeOn"))}
     }catch(e){}
+    try{state.lastExport=(await Store.getMeta("lastExport"))||null;state.exportSnooze=(await Store.getMeta("exportSnooze"))||null}catch(e){}
     rebuildDays(); syncEconomy(false); render();
   }
 };
@@ -122,7 +123,7 @@ function toast(html,cls=""){
   const t=document.createElement("div");t.className="toast "+cls;t.innerHTML=html;
   const box=document.getElementById("toasts");
   // en celular, como máximo 3 a la vez: se va el más viejo
-  if(matchMedia("(max-width:820px)").matches) while(box.children.length>=3) box.firstElementChild.remove();
+  if(matchMedia("(max-width:820px)").matches) while(box.querySelectorAll(".toast:not(.upd)").length>=3) box.querySelector(".toast:not(.upd)").remove();
   box.appendChild(t);setTimeout(()=>t.remove(),3800);
 }
 function actRow(k,a){
@@ -186,7 +187,7 @@ function vDashboard(s){
   <div class="grid2">
     <section class="panel"><div class="panel-h"><h2>Actividades de hoy</h2><button class="link" data-go="hoy">Ver día</button></div>${dayList(T,s)}</section>
     <div class="col">
-      ${dashBoss()}${dashPlans()}${dashChest(s)}${dashSaving()}${dashMonthGoals()}
+      ${dashBoss()}${dashPlans()}${dashChest(s)}${dashSaving()}${dashMonthGoals()}${dashExport()}
       <section class="panel"><div class="panel-h"><h2>Próximos objetivos</h2></div>${goals(s)}</section>
       <section class="panel"><div class="panel-h"><h2>Logros recientes</h2><button class="link" data-go="logros">Ver todos</button></div>
       ${recent.length?`<div class="ach-list">${recent.map(([id,k])=>{const a=ACH.find(x=>x.id===id);return `<div class="ach"><div class="medal">${medal(true)}</div><div><b>${a.name}</b><span>${fmtShort(k)} · ${a.desc}</span></div></div>`}).join("")}</div>`:`<div class="empty" style="padding:10px">Tu primer logro llega con tu primera actividad.</div>`}
@@ -273,7 +274,7 @@ function vPerfil(s){
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
   ${Notify.panel()}
-  <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>
+  <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>${exportLine()}
   <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
   <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
@@ -391,15 +392,46 @@ function ecoExport(){
 }
 async function doExport(){
   bk.err="";bk.copyText="";
-  const text=exportJSON(), name=`life-rpg-respaldo-${todayKey()}.json`;
+  let text;
+  try{text=exportJSON()}catch(e){bk.err="No se pudo preparar el respaldo.";render();return}
+  const name=`life-rpg-respaldo-${todayKey()}.json`;
   const file=new Blob([text],{type:"application/json"});
   // En celular, el menú de compartir permite guardarlo en Archivos o Drive
   try{
     const f=new File([file],name,{type:"application/json"});
-    if(matchMedia("(pointer:coarse)").matches&&navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:"Respaldo Life RPG"});toast("Respaldo exportado.");return}
+    if(matchMedia("(pointer:coarse)").matches&&navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],title:"Respaldo Life RPG"});markExported();toast("Respaldo exportado.");return}
   }catch(e){ if(e&&e.name==="AbortError"){toast("Exportación cancelada.");return} }
-  try{const url=URL.createObjectURL(file);const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);toast("Respaldo exportado.")}
+  // La descarga no avisa si el archivo terminó de guardarse: se registra que la exportación se inició
+  try{const url=URL.createObjectURL(file);const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);markExported();toast("Respaldo exportado.")}
   catch(e){bk.copyText=text;render()}
+}
+/* ============ Última exportación (por dispositivo) ============
+   Se registra cuando el respaldo se generó y la descarga, el menú Compartir o la copia al portapapeles se
+   iniciaron sin cancelación ni error. El navegador no confirma que el archivo quedó guardado, por eso la app
+   habla de "exportación" y nunca de "respaldo guardado". */
+const EXPORT_EVERY=30, EXPORT_SNOOZE=7;
+function markExported(){
+  const at=new Date().toISOString(); state.lastExport=at; state.exportSnooze=null;
+  Store.setMeta("lastExport",at).catch(()=>{}); Store.setMeta("exportSnooze",null).catch(()=>{});
+  render();
+}
+/** Días desde la última exportación (días de calendario), o null si nunca se exportó en este dispositivo */
+function exportDays(){
+  const t=Date.parse(state.lastExport); if(!state.lastExport||isNaN(t)) return null;
+  return Math.max(0,Math.round((fromKey(todayKey())-fromKey(keyOf(new Date(t))))/864e5));
+}
+const agoText=d=>d===0?"hoy":d===1?"hace 1 día":`hace ${d} días`;
+function exportLine(){
+  const d=exportDays();
+  return `<p class="exp-last" style="color:var(--muted);font-size:13px;margin:0 0 12px">${d===null?"Todavía no exportaste un respaldo desde este dispositivo.":`Última exportación: <b style="color:var(--fg)">${agoText(d)}</b> (${fmtLong(keyOf(new Date(state.lastExport)))})`}</p>`;
+}
+function dashExport(){
+  if(state.demo||!Object.keys(state.days).length) return "";
+  const d=exportDays(); if(d!==null&&d<EXPORT_EVERY) return "";
+  if(state.exportSnooze&&Date.parse(state.exportSnooze)>Date.now()) return "";
+  return `<section class="panel"><div class="panel-h"><h2>Respaldo</h2></div>
+  <div class="goal-h"><span>${d===null?"Todavía no exportaste un respaldo desde este dispositivo.":`Última exportación: ${agoText(d)}.`} Guarda una copia de tus datos por si pierdes el celular o cambias de dispositivo.</span></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn sm primary" id="expNow">Exportar ahora</button><button class="btn sm ghost" id="expLater">Más tarde</button></div></section>`;
 }
 function validRow(r){
   const min=Math.round(+r.minutes), diff=+r.intensity;
@@ -545,7 +577,8 @@ document.addEventListener("change",e=>{
 document.addEventListener("click",e=>{
   const t=e.target.closest("button"); if(!t) return;
   switch(t.id){
-    case "expBtn": doExport(); break;
+    case "expBtn": case "expNow": doExport(); break;
+    case "expLater": { const until=new Date(Date.now()+EXPORT_SNOOZE*864e5).toISOString(); state.exportSnooze=until; Store.setMeta("exportSnooze",until).catch(()=>{}); render(); break; }
     case "impBtn": bk.copyText="";document.getElementById("impFile")?.click(); break;
     case "impMerge": applyImport("merge"); break;
     case "impReplace": bk.replaceAsk=true; render(); break;
@@ -553,7 +586,7 @@ document.addEventListener("click",e=>{
     case "impReplaceYes": applyImport("replace"); break;
     case "impCancel": bk.pending=null; bk.replaceAsk=false; render(); break;
     case "expClose": bk.copyText=""; render(); break;
-    case "expCopy": { const ta=document.getElementById("expText"); navigator.clipboard?.writeText(bk.copyText).then(()=>toast("Copiado."),()=>{ta.focus();ta.select()}) ?? (ta.focus(),ta.select()); break; }
+    case "expCopy": { const ta=document.getElementById("expText"); navigator.clipboard?.writeText(bk.copyText).then(()=>{toast("Copiado.");markExported()},()=>{ta.focus();ta.select()}) ?? (ta.focus(),ta.select()); break; }
   }
 });
 /* ============ Cuenta y sincronización ============ */
@@ -627,7 +660,35 @@ const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent);
 function installBtn(){return installEvt&&!isStandalone()?`<button class="btn sm gold" id="installBtn">Instalar app</button>`:""}
 function installHint(){return isIOS()&&!isStandalone()?`<p style="color:var(--muted);font-size:12.5px;margin:12px 0 0">Para instalarla en iPhone: en Safari toca Compartir y luego "Agregar a inicio".</p>`:""}
 document.addEventListener("click",async e=>{if(e.target.closest("#installBtn")&&installEvt){installEvt.prompt();try{await installEvt.userChoice}catch(_){}installEvt=null;render()}});
-if("serviceWorker" in navigator) addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}));
+/* ============ Versión nueva ============
+   Cuando se publica algo, el service worker baja la versión completa y espera. La app muestra un aviso y
+   recarga solo cuando la persona toca "Actualizar". Los datos ya están guardados en el dispositivo. */
+let swReg=null, swReload=false, swChecked=Date.now();
+function updToast(){
+  if(document.getElementById("updToast")) return;
+  const t=document.createElement("div");t.className="toast upd";t.id="updToast";t.setAttribute("role","status");
+  t.innerHTML=`<span>Nueva versión disponible</span><button class="btn sm gold" id="updBtn">Actualizar</button>`;
+  document.getElementById("toasts").prepend(t);
+}
+function swWatch(reg){
+  swReg=reg;
+  const check=()=>{if(reg.waiting&&navigator.serviceWorker.controller) updToast()};
+  check();
+  reg.addEventListener("updatefound",()=>{const w=reg.installing;if(w) w.addEventListener("statechange",()=>{if(w.state==="installed") check()})});
+}
+if("serviceWorker" in navigator){
+  addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").then(swWatch).catch(()=>{}));
+  // Recarga solo si la persona tocó "Actualizar" (la primera instalación también cambia el controlador)
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{if(swReload){swReload=false;location.reload()}});
+  // Al volver a la app (el celular la deja abierta días) y cada hora, revisa si hay versión nueva
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&swReg&&Date.now()-swChecked>60000){swChecked=Date.now();swReg.update().catch(()=>{})}});
+  setInterval(()=>{if(document.visibilityState==="visible"&&swReg){swChecked=Date.now();swReg.update().catch(()=>{})}},3600000);
+  document.addEventListener("click",e=>{
+    if(!e.target.closest("#updBtn")) return;
+    const w=swReg&&swReg.waiting;
+    if(w){swReload=true;w.postMessage({type:"skip-waiting"})} else location.reload();
+  });
+}
 
 /* ============ Router y render ============ */
 // go(), la barra de 5 y el botón Atrás están en nav.js

@@ -1,0 +1,58 @@
+# Pruebas automáticas: corren en cada PR y en cada cambio de main. No usan el proyecto real de Supabase ni secretos.
+name: Pruebas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: Reglas de la app y publicación
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # para comparar VERSION con la rama base del PR
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pruebas de reglas y de sw.js
+        run: node --test "tests/*.test.js"
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+
+  supabase:
+    name: Base de datos (migraciones y funciones)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        # El mismo Postgres que usa Supabase, con pg_cron, pg_net, Vault, el esquema auth y los roles
+        image: supabase/postgres:15.8.1.085
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -h localhost"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cliente psql
+        run: command -v psql || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+      - name: Migraciones 001 a 006 y pruebas de SQL
+        run: tests/sql/run.sh
