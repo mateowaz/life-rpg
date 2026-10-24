@@ -225,6 +225,7 @@ h1,h2,h3{margin:0;text-wrap:balance}
 .toast{background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:12px 16px;font-size:14px;box-shadow:0 12px 30px -10px rgba(0,0,0,.7);animation:tin .35s ease-out;max-width:320px}
 .toast.lvl{border-color:var(--gold);background:linear-gradient(90deg,rgba(220,188,120,.18),var(--panel2))}
 .toast b{color:var(--gold)}
+.toast.upd{display:flex;align-items:center;gap:12px}
 @keyframes tin{from{transform:translateY(-8px);opacity:.3}to{transform:none;opacity:1}}
 
 .fab{display:none}

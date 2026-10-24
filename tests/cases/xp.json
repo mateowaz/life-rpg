@@ -1,0 +1,20 @@
+{
+  "nota": "XP de una actividad: [minutos, intensidad, categoría, XP esperada]. La usan las pruebas de la app (actXP) y las de Supabase (private.activity_xp), así las dos fórmulas no pueden separarse sin que falle una prueba.",
+  "casos": [
+    [1, 1, "curso", 11],
+    [30, 1, "lectura", 40],
+    [30, 2, "fisico", 60],
+    [30, 3, "cuidado", 80],
+    [1, 2, "curso", 17],
+    [3, 2, "curso", 20],
+    [9, 2, "lectura", 29],
+    [240, 3, "fisico", 500],
+    [30, 2, "finanzas", 75],
+    [1, 2, "finanzas", 21],
+    [3, 2, "finanzas", 25],
+    [9, 2, "finanzas", 36],
+    [1, 3, "finanzas", 28],
+    [5, 2, "finanzas", 29],
+    [240, 3, "finanzas", 625]
+  ]
+}

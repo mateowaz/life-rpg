@@ -19,7 +19,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `sync.js`: inicio de sesión (email y contraseña) y sincronización con Supabase: sube pendientes, baja cambios, Realtime y reintentos.
 - `config.js`: URL del proyecto, **Publishable Key** y clave VAPID **pública**. Nunca la service_role, una secret key ni la clave VAPID privada.
 - `app.js`: vistas, formulario (agregar y editar), cuenta, respaldo e instalación.
-- `sw.js`: modo offline y mostrar notificaciones push. **Sube `VERSION` en cada publicación.**
+- `sw.js`: modo offline, aviso de versión nueva y mostrar notificaciones push. **Sube `VERSION` en cada publicación** (las pruebas de cada PR lo comprueban).
 - `vendor/supabase-2.117.2.js`: cliente de Supabase guardado en el repositorio para que funcione sin internet (licencia MIT).
 - `supabase/schema.sql`: tablas, reglas RLS y trigger de "gana la versión más reciente".
 - `supabase/002_oro_tienda_objetivos_cofres.sql`: Oro, tienda, compras, objetivos y cofres. Se ejecuta una vez, después de `schema.sql`.
@@ -29,6 +29,8 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `supabase/006_finanzas.sql`: agrega la categoría Finanzas. Revisa la restricción de categoría de 5 tablas conocidas y se detiene con un mensaje si algo no es lo esperado; después las reemplaza, actualiza `cat_name` y hace que cofres y Boss usen `private.activity_xp` (la misma fórmula que la app). Se ejecuta una vez, después de `005`.
 - `supabase/functions/send-push/index.ts`: Edge Function que cifra y entrega los avisos (Web Push). Sus claves son secretos de la función.
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
+- `tests/`: pruebas automáticas (ver "Pruebas").
+- `.github/workflows/pruebas.yml`: corre las pruebas en GitHub en cada PR y en cada cambio de `main`.
 
 ## Sincronización
 - Offline-first: todo se guarda primero en el dispositivo; la cola se sube sola al volver la conexión.
@@ -70,5 +72,19 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 ## Publicar en GitHub Pages
 Rama `main`, carpeta `/` (Settings → Pages).
 
+## Versiones nuevas
+- Cada `VERSION` de `sw.js` se descarga completa en su propio caché: la app nunca abre con archivos de dos versiones mezclados. Un archivo cambiado sin subir `VERSION` no llega a los dispositivos.
+- Cuando hay una versión nueva, la app muestra "Nueva versión disponible" con el botón Actualizar. No recarga sola: si no se toca, la versión nueva se usa la próxima vez que la app se abre desde cero.
+- La app revisa si hay versión nueva al volver a ella y cada hora mientras está abierta.
+- Desde la v7 o anteriores (que no tenían el aviso) se actualiza sola, como antes.
+
+## Pruebas
+- `node --test "tests/*.test.js"`: reglas de la app (XP, niveles, rangos, rachas, logros, Oro, cofres, objetivos y Boss) y comprobaciones de `sw.js` (todo lo que carga `index.html` está en `SHELL`, los archivos existen y `VERSION` cambia si cambió la app). No hace falta instalar nada.
+- `tests/sql/run.sh`: ejecuta `schema.sql` y las migraciones 002 a 006 en un Postgres de prueba vacío (imagen `supabase/postgres`) y comprueba RLS, `buy_reward`, `claim_goal`, `open_chest`, `claim_boss`, `protect_boss`, `protect_focus`, `push_tick()` con filas corruptas y que `private.activity_xp` da lo mismo que `actXP` en las 3.600 combinaciones. Nunca usa el proyecto real.
+- `tests/cases/xp.json`: casos de XP que usan las dos pruebas, así la fórmula de la app y la de Supabase no pueden separarse.
+- En GitHub corren solas en cada PR (pestaña Actions).
+
 ## Respaldo
-Perfil → Datos y respaldo. Exporta la versión 6 (actividades, perfil con avatar, Oro, tienda, compras, objetivos, cofres, Bosses, planificaciones con su recordatorio, sesiones de enfoque y preferencias de notificaciones) e importa respaldos de las versiones 1 a 6. Nunca incluye dispositivos, suscripciones ni claves; importar no activa notificaciones en ningún dispositivo. Un respaldo nunca copia Oro ni `claimed_at`, nunca cierra un cofre abierto ni desreclama un objetivo o un Boss: lo que falta se confirma con el servidor.
+Perfil → Datos y respaldo muestra la **última exportación** de este dispositivo. Si pasaron más de 30 días (o nunca se exportó y ya hay actividades), Inicio muestra una tarjeta con "Exportar ahora" y "Más tarde" (la oculta 7 días). La fecha se registra cuando el respaldo se generó y la descarga, el menú Compartir o la copia al portapapeles se iniciaron sin cancelación ni error; el navegador no confirma que el archivo quedó guardado, por eso la app dice "exportación" y no "respaldo guardado". Se guarda solo en este dispositivo.
+
+Exporta la versión 6 (actividades, perfil con avatar, Oro, tienda, compras, objetivos, cofres, Bosses, planificaciones con su recordatorio, sesiones de enfoque y preferencias de notificaciones) e importa respaldos de las versiones 1 a 6. Nunca incluye dispositivos, suscripciones ni claves; importar no activa notificaciones en ningún dispositivo. Un respaldo nunca copia Oro ni `claimed_at`, nunca cierra un cofre abierto ni desreclama un objetivo o un Boss: lo que falta se confirma con el servidor.
