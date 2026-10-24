@@ -29,6 +29,7 @@ Versión instalable de Life RPG. Funciona sin internet y guarda los datos en el 
 - `supabase/005_navegacion_notificaciones.sql`: recordatorio en `planned_activities`, dispositivos, preferencias, avisos y entregas por dispositivo, y las tareas de `pg_cron`. Se ejecuta una vez, después de `004`.
 - `supabase/006_finanzas.sql`: agrega la categoría Finanzas. Revisa la restricción de categoría de 5 tablas conocidas y se detiene con un mensaje si algo no es lo esperado; después las reemplaza, actualiza `cat_name` y hace que cofres y Boss usen `private.activity_xp` (la misma fórmula que la app). Se ejecuta una vez, después de `005`.
 - `supabase/007_rutinas.sql`: tabla `recurring_plans`, 3 columnas en `planned_activities` (`recurring_plan_id`, `recurrence_date`, `recurrence_edited`) y `private.enqueue_due` sin aviso de "atrasada" para misiones de rutina. Se ejecuta una vez, después de `006`. Hasta ejecutarla, las rutinas y sus misiones quedan en el dispositivo (en la cola) y todo lo demás sigue sincronizando.
+- `supabase/008_plan_del_dia.sql`: Plan del Día. 5 columnas opcionales en `planned_activities` (`priority`, `energy_required`, `duration_mode`, `minimum_minutes`, `due_date`), 4 en `recurring_plans`, tabla `daily_plans` (plan aceptado de cada día, con RLS y Realtime) y `profiles.day_plan_prefs`. Se ejecuta una vez, después de `007`, con un respaldo JSON hecho antes. Si falta 007 o ya se corrió, se detiene sin cambiar nada. Hasta ejecutarla, el Plan del Día funciona en el dispositivo y lo nuevo queda en la cola; todo lo demás sigue sincronizando.
 - `supabase/functions/send-push/index.ts`: Edge Function que cifra y entrega los avisos (Web Push). Sus claves son secretos de la función.
 - `manifest.webmanifest` + `icons/`: nombre, ícono y pantalla completa.
 - `tests/`: pruebas automáticas (ver "Pruebas").
@@ -89,7 +90,7 @@ Rama `main`, carpeta `/` (Settings → Pages).
 
 ## Pruebas
 - `node --test "tests/*.test.js"`: reglas de la app (XP, niveles, rangos, rachas, logros, Oro, cofres, objetivos y Boss) y comprobaciones de `sw.js` (todo lo que carga `index.html` está en `SHELL`, los archivos existen y `VERSION` cambia si cambió la app). No hace falta instalar nada.
-- `tests/sql/run.sh`: ejecuta `schema.sql` y las migraciones 002 a 007 en un Postgres de prueba vacío (imagen `supabase/postgres`) y comprueba RLS, `buy_reward`, `claim_goal`, `open_chest`, `claim_boss`, `protect_boss`, `protect_focus`, `push_tick()` con filas corruptas y que `private.activity_xp` da lo mismo que `actXP` en las 3.600 combinaciones. Nunca usa el proyecto real.
+- `tests/sql/run.sh`: ejecuta `schema.sql` y las migraciones 002 a 008 en un Postgres de prueba vacío (imagen `supabase/postgres`) y comprueba RLS, `buy_reward`, `claim_goal`, `open_chest`, `claim_boss`, `protect_boss`, `protect_focus`, `push_tick()` con filas corruptas y que `private.activity_xp` da lo mismo que `actXP` en las 3.600 combinaciones. Nunca usa el proyecto real.
 - `tests/cases/xp.json`: casos de XP que usan las dos pruebas, así la fórmula de la app y la de Supabase no pueden separarse.
 - En GitHub corren solas en cada PR (pestaña Actions).
 

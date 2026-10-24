@@ -15,7 +15,7 @@ function makeDemo(){
 /* ============ Estado y guardado ============ */
 const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:"",avatar_icon:"initials",avatar_frame:"simple",avatar_bg:"violet",avatar_badge:"none",equipped_title:"",featured_badges:[],updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
   eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null,
-  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week",lastExport:null,exportSnooze:null,routines:new Map(),rtMenu:null,mOpen:null};
+  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week",lastExport:null,exportSnooze:null,routines:new Map(),rtMenu:null,mOpen:null,dayplans:new Map(),dp:null,dpSet:null,dpHide:null};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity,r.category),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -40,6 +40,7 @@ const App=window.App={
       if(!state.device){state.device=(await Store.getMeta("device"))||"este-dispositivo";state.pomo=(await Store.getMeta("pomo"))||null;state.wakeOn=!!(await Store.getMeta("wakeOn"))}
     }catch(e){}
     try{const routines=await Store.all("routines");state.routines=new Map(routines.map(r=>[r.id,r]))}catch(e){} // Rutinas (versión 7)
+    try{const dps=await Store.all("dayplans");state.dayplans=new Map(dps.map(r=>[r.id,r]));state.dpHide=(await Store.getMeta("dpHide"))||null}catch(e){} // Plan del Día (versión 8)
     try{state.lastExport=(await Store.getMeta("lastExport"))||null;state.exportSnooze=(await Store.getMeta("exportSnooze"))||null}catch(e){}
     rebuildDays(); syncEconomy(false); render();
     ensureRoutines(); // crea las misiones de las rutinas que falten (solo escribe si algo cambió)
@@ -200,10 +201,10 @@ function vDashboard(s){
 
 function vHoy(s){
   const T=todayKey(); const k=state.todayView||T; const isT=k===T;
-  return header(isT?`Hoy <span>—</span> ${fmtLong(k)}`:`${cap(fmtWeek(k))} <span>—</span> ${fmtLong(k)}`,isT?"Registra lo que hiciste hoy. Todo queda guardado con esta fecha.":"Estás viendo un día anterior. Puedes agregar algo que olvidaste registrar.",false)+`
+  return header(isT?`Hoy <span>—</span> ${fmtLong(k)}`:`${cap(fmtWeek(k))} <span>—</span> ${fmtLong(k)}`,isT?"Registra lo que hiciste hoy. Todo queda guardado con esta fecha.":"Estás viendo un día anterior. Puedes agregar algo que olvidaste registrar.",false)+(isT?dpSection():"")+`
   <div class="top" style="align-items:center"><div class="cal-h"><button class="btn sm" data-dayshift="-1" aria-label="Día anterior">${ico("left").replace("<svg","<svg width='16' height='16'")}</button><button class="btn sm" data-dayshift="1" ${isT?"disabled":""} aria-label="Día siguiente">${ico("right").replace("<svg","<svg width='16' height='16'")}</button>${isT?"":`<button class="btn sm ghost" data-dayshift="0">Volver a hoy</button>`}</div>
   <div class="hoy-btns">${isT?`<button class="btn" data-fnew>${ico("focus")} Iniciar enfoque</button>`:""}<button class="btn primary" style="display:inline-flex" data-add="${k}">${ico("plus")} Agregar actividad</button></div></div>
-  ${isT?planTodayPanel():""}
+  ${isT?dpMissions():""}
   <div class="grid2"><section class="panel"><div class="panel-h"><h2>${isT?"Actividades realizadas":"Registro del día"}</h2></div>${dayList(k,s)}</section>
   <section class="panel"><div class="panel-h"><h2>Categorías del día</h2></div><div class="hbars">${CATS.map(c=>{const acts=(dataDays()[k]?.activities||[]).filter(a=>a.cat===c.id);const xp=acts.reduce((t,a)=>t+a.xp,0);return `<div class="hbar"><span>${c.name}</span><div class="track"><i style="width:${Math.min(xp/150,1)*100}%;background:var(--c-${c.id})"></i></div><span class="v num">${xp?`+${xp} XP`:"—"}</span></div>`}).join("")}</div>
   <p style="color:var(--muted);font-size:13px;margin:16px 0 0">Completa 4 categorías distintas en un día para ganar <b style="color:var(--gold)">+${FULL_DAY_BONUS} XP</b> de bonus.</p></section></div>`;
@@ -275,6 +276,7 @@ function vPerfil(s){
   </div><div class="col">
   <section class="panel"><div class="panel-h"><h2>Rangos</h2></div><div class="ladder">${RANKS.map(r=>`<div class="rung ${r.name===s.rank.name?"cur":(r.lv<s.G.level?"done":"")}"><b>${r.name}</b><span class="num">Nivel ${r.lv} · ${nf(totalXPFor(r.lv))} XP</span></div>`).join("")}</div></section>
   ${accountPanel()}
+  ${dpPrefsPanel()}
   ${Notify.panel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>${exportLine()}
   <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size||state.routines.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
@@ -377,7 +379,7 @@ function exportJSON(){
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
   const P=state.profile, profile={name:P.name||"",motto:P.motto||"",updated_at:P.updated_at};
   for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) profile[k]=P[k];
-  return JSON.stringify({app:"life-rpg",version:7,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport(),...routineExport(),...prefsExport()},null,2);
+  return JSON.stringify({app:"life-rpg",version:8,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport(),...routineExport(),...dayPlanExport(),...prefsExport()},null,2);
 }
 /** Versión 6: preferencias de notificaciones. Sin dispositivos, suscripciones, claves ni historial de avisos. */
 function prefsExport(){const p=Notify.exportPrefs();return p?{notification_preferences:p}:{}}
@@ -459,9 +461,9 @@ function parseBackup(text){
     }
   }
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
-  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j), rt=parseRoutines(j);
-  skipped+=eco.skipped+bs.skipped+pl.skipped+rt.skipped;
-  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,routines:rt.routines,nprefs:Notify.parsePrefs(j.notification_preferences),skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
+  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j), rt=parseRoutines(j), dp=dpParseRows(j.daily_plans);
+  skipped+=eco.skipped+bs.skipped+pl.skipped+rt.skipped+dp.skipped;
+  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,routines:rt.routines,dayplans:dp.rows,dayPrefs:pr.day_plan_prefs&&typeof pr.day_plan_prefs==="object"?dpPrefs(pr.day_plan_prefs):null,nprefs:Notify.parsePrefs(j.notification_preferences),skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
 }
 /* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
 const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -553,17 +555,20 @@ function applyImport(mode){
   if(P.profile.hasAvatar&&(mode==="replace"||!state.profile.updated_at||Date.parse(P.profile.updated_at)>Date.parse(state.profile.updated_at))){
     for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) state.profile[k]=P.profile[k]; profChanged=true;
   }
+  // Preferencias del Plan del Día (respaldo versión 8): al combinar, solo si el archivo es más nuevo
+  if(P.dayPrefs&&(mode==="replace"||!state.profile.updated_at||Date.parse(P.profile.updated_at)>Date.parse(state.profile.updated_at))){state.profile.day_plan_prefs=P.dayPrefs;profChanged=true}
   if(profChanged) saveProfile();
   const bossRes=importBosses(P,mode,at);
   const rtRes=importRoutines(P,mode,at);
   const planRes=importPlans(P,mode,at);
+  const dpRes=importDayPlans(P,mode,at);
   ensureRoutines();
   const eco=importEco(P,mode,at);
   Notify.importPrefs(P.nprefs,mode).catch(()=>{});
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
-  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`,planRes.plans&&`${planRes.plans} planificaciones`,planRes.focus&&`${planRes.focus} sesiones de enfoque`,rtRes&&`${rtRes} rutina${rtRes===1?"":"s"}`].filter(Boolean);
+  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`,planRes.plans&&`${planRes.plans} planificaciones`,planRes.focus&&`${planRes.focus} sesiones de enfoque`,rtRes&&`${rtRes} rutina${rtRes===1?"":"s"}`,dpRes&&`${dpRes} plan${dpRes===1?"":"es"} del día`].filter(Boolean);
   if(ex.length) toast(`También se importaron ${ex.join(", ")}.`);
   if(eco.skippedBuys) toast(`${eco.skippedBuys} compra${eco.skippedBuys===1?"":"s"} del archivo no se repitió: la recompensa ya no está activa o no alcanza el Oro.`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) {toast(`Logros actualizados según tu historial.`);break}

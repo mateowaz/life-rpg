@@ -11,7 +11,7 @@ const Sync = (() => {
   const RETRY = [5, 15, 60, 300]; // segundos
   const PAGE = 1000, CHUNK = 500;
   // Perfil: nombre, lema y (versión 4) avatar, título equipado y logros destacados
-  const PROF = ["name", "motto", "avatar_initials", "avatar_icon", "avatar_frame", "avatar_bg", "avatar_badge", "equipped_title", "featured_badges"];
+  const PROF = ["name", "motto", "avatar_initials", "avatar_icon", "avatar_frame", "avatar_bg", "avatar_badge", "equipped_title", "featured_badges", "day_plan_prefs"];   // day_plan_prefs: versión 8
   // Tablas nuevas que la app sube: local → Supabase, columna de conflicto, prefijo en la cola de pendientes
   const PUSH = [
     ["items", "shop_items", "id", "item:"],
@@ -21,6 +21,7 @@ const Sync = (() => {
     ["plans", "planned_activities", "user_id,id", "plan:"],   // versión 5
     ["focus", "focus_sessions", "user_id,id", "focus:"],      // versión 5
     ["routines", "recurring_plans", "user_id,id", "routine:"],// versión 7
+    ["dayplans", "daily_plans", "user_id,id", "dayplan:"],    // versión 8
   ];
   // Tablas nuevas que se bajan: local, Supabase, columnas, orden secundario
   const PULL = [
@@ -30,13 +31,14 @@ const Sync = (() => {
     ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
     ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
     ["bosses", "monthly_bosses", "id,year,month,name,description,boss_type,category,target_hp,manual_progress,coin_reward,title_reward,theme,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
-    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,reminder_minutes,recurring_plan_id,recurrence_date,recurrence_edited,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,reminder_minutes,recurring_plan_id,recurrence_date,recurrence_edited,priority,energy_required,duration_mode,minimum_minutes,due_date,created_at,updated_at,deleted_at,synced_at", "id"],
     ["focus", "focus_sessions", "id,planned_activity_id,device_id,title,category,mode,status,started_at,segment_started_at,segments,focus_seconds,pomodoro,ended_at,created_at,updated_at,deleted_at,synced_at", "id"],
-    ["routines", "recurring_plans", "id,series_id,title,description,category,weekdays,start_date,end_date,time,planned_minutes,intensity,note,reminder_minutes,active,created_at,updated_at,deleted_at,synced_at", "id"],   // versión 7
+    ["routines", "recurring_plans", "id,series_id,title,description,category,weekdays,start_date,end_date,time,planned_minutes,intensity,note,reminder_minutes,active,priority,energy_required,duration_mode,minimum_minutes,created_at,updated_at,deleted_at,synced_at", "id"],   // versión 7
+    ["dayplans", "daily_plans", "id,date,available_minutes,energy,focus_kind,focus_ref,items,removed,accepted_at,closed_at,created_at,updated_at,deleted_at,synced_at", "id"],   // versión 8
   ];
 
   // Tablas de la versión 5: si todavía no se ejecutó 004 en Supabase, se saltean sin frenar el resto
-  const OPTIONAL = new Set(["planned_activities", "focus_sessions", "recurring_plans"]);   // recurring_plans: versión 7 (007)
+  const OPTIONAL = new Set(["planned_activities", "focus_sessions", "recurring_plans", "daily_plans"]);   // recurring_plans: versión 7 (007); daily_plans: versión 8 (008)
   const missing = (e) => e && (e.code === "PGRST205" || e.code === "42P01" || /could not find the table|does not exist/i.test(String(e.message || "")));
   // Columna de la versión 6 (planned_activities.reminder_minutes): si todavía no se ejecutó 005, se sube y se baja sin ella
   const noColumn = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /reminder_minutes/.test(String(e.message || ""));
@@ -47,8 +49,16 @@ const Sync = (() => {
   const REC = ["recurring_plan_id", "recurrence_date", "recurrence_edited"];
   const noRecCol = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /recurring_plan_id|recurrence_date|recurrence_edited/.test(String(e.message || ""));
   const stripRec = (r) => { const x = { ...r }; for (const k of REC) delete x[k]; return x; };
+  // Columnas de la versión 8 (Plan del Día). Si todavía no se ejecutó 008, se sube y se baja sin ellas. Las filas que tienen
+  // algún valor en esas columnas esperan en la cola (así no se pierde la prioridad que elegiste) y suben cuando 008 existe.
+  const DPC = ["priority", "energy_required", "duration_mode", "minimum_minutes"], DPP = [...DPC, "due_date"];
+  const noDpCol = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /priority|energy_required|duration_mode|minimum_minutes|due_date|day_plan_prefs/.test(String(e.message || ""));
+  const dpKeys = (t) => (t === "plans" ? DPP : DPC);
+  const dpUsed = (t, r) => (t === "plans" ? DPP.some((k) => r[k] != null) : r.priority !== "normal" || r.energy_required !== "normal" || r.duration_mode !== "fixed" || r.minimum_minutes != null);
+  const stripDp = (t, r) => { const x = { ...r }; for (const k of dpKeys(t)) delete x[k]; return x; };
+  const dropCols = (cols, ks) => cols.split(",").filter((c) => !ks.includes(c)).join(",");
 
-  let sb = null, session = null, linked = null, channel2 = null;
+  let sb = null, session = null, linked = null, channel2 = null, channel3 = null;
   let status = "local"; // local | confirm | syncing | synced | offline | error
   let busy = false, again = false, debounce = null, retryTimer = null, retryN = 0;
   let offset = 0, pendingN = 0, lastSync = null, channel = null, uploadCount = 0;
@@ -115,11 +125,15 @@ const Sync = (() => {
       channel2 = sb.channel("life-rpg-rt-" + uid())
         .on("postgres_changes", { event: "*", schema: "public", table: "recurring_plans", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .subscribe();
+      // Plan del Día (versión 8), también aparte
+      channel3 = sb.channel("life-rpg-dp-" + uid())
+        .on("postgres_changes", { event: "*", schema: "public", table: "daily_plans", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .subscribe();
     } catch (e) { channel = null; }
   }
   function stopRealtime() {
-    for (const c of [channel, channel2]) if (c && sb) { try { sb.removeChannel(c); } catch (e) {} }
-    channel = null; channel2 = null;
+    for (const c of [channel, channel2, channel3]) if (c && sb) { try { sb.removeChannel(c); } catch (e) {} }
+    channel = null; channel2 = null; channel3 = null;
   }
 
   function scheduleRetry() {
@@ -160,9 +174,14 @@ const Sync = (() => {
       if (profPend) {
         const p = await Store.getProfile();
         const row = { user_id: uid(), updated_at: p.updated_at }; for (const k of PROF) row[k] = p[k];
-        const { error } = await sb.from("profiles").upsert(row, { onConflict: "user_id", defaultToNull: false });
+        let { error } = await sb.from("profiles").upsert(row, { onConflict: "user_id", defaultToNull: false });
+        let keep = false;
+        if (error && noDpCol(error)) {                                  // servidor sin 008: sube el perfil sin las preferencias del plan
+          delete row.day_plan_prefs; keep = Object.keys(p.day_plan_prefs || {}).length > 0;
+          ({ error } = await sb.from("profiles").upsert(row, { onConflict: "user_id", defaultToNull: false }));
+        }
         if (error) throw error;
-        await Store.clearPending([profPend]);
+        if (!keep) await Store.clearPending([profPend]);
       }
 
       // 3. Bajar (con 2 minutos de margen para no perder cambios que llegaron casi al mismo tiempo)
@@ -181,7 +200,8 @@ const Sync = (() => {
         from += PAGE;
       }
       await Store.setMeta("cursor", maxSeen);
-      const { data: prof, error: e3 } = await sb.from("profiles").select(PROF.join(",") + ",updated_at").maybeSingle();
+      let { data: prof, error: e3 } = await sb.from("profiles").select(PROF.join(",") + ",updated_at").maybeSingle();
+      if (e3 && noDpCol(e3)) ({ data: prof, error: e3 } = await sb.from("profiles").select(PROF.filter((k) => k !== "day_plan_prefs").join(",") + ",updated_at").maybeSingle());
       if (e3) throw e3;
       if (prof && (await Store.applyRemoteProfile(prof))) changedLocal = true;
 
@@ -206,6 +226,13 @@ const Sync = (() => {
               const manual = rows.filter((r) => !r.recurring_plan_id), ids = new Set(manual.map((r) => P + r.id));
               error = null;
               if (manual.length) ({ error } = await sb.from(table).upsert(manual.map((r) => ({ ...stripRec(r), user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+              done = part.filter((p) => ids.has(p.id) || !rows.some((r) => P + r.id === p.id));
+            }
+            if (error && (t === "plans" || t === "routines") && noDpCol(error)) {   // servidor sin 008: suben sin esas columnas las que no las usan
+              const plain = rows.filter((r) => !dpUsed(t, r)), ids = new Set(plain.map((r) => P + r.id));
+              error = null;
+              if (plain.length) ({ error } = await sb.from(table).upsert(plain.map((r) => ({ ...stripDp(t, r), user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+              if (error && t === "plans" && noRecCol(error)) { const m2 = plain.filter((r) => !r.recurring_plan_id); for (const r of plain) if (r.recurring_plan_id) ids.delete(P + r.id); error = null; if (m2.length) ({ error } = await sb.from(table).upsert(m2.map((r) => ({ ...stripRec(stripDp(t, r)), user_id: uid() })), { onConflict: conflict, defaultToNull: false })); }
               done = part.filter((p) => ids.has(p.id) || !rows.some((r) => P + r.id === p.id));
             }
             if (error && OPTIONAL.has(table) && missing(error)) break;    // quedan pendientes hasta que exista la tabla
@@ -254,6 +281,7 @@ const Sync = (() => {
           if (error && OPTIONAL.has(table) && missing(error)) { max = cur; break; }
           if (error && t === "plans" && noColumn(error) && !noRem) { noRem = true; await Store.setMeta("noRemCol", true); cols = cols.replace("reminder_minutes,", ""); continue; }
           if (error && t === "plans" && noRecCol(error) && cols.includes("recurring_plan_id")) { cols = cols.replace("recurring_plan_id,recurrence_date,recurrence_edited,", ""); continue; }
+          if (error && (t === "plans" || t === "routines") && noDpCol(error) && cols.includes("priority")) { cols = dropCols(cols, dpKeys(t)); continue; }   // servidor sin 008
           if (error) throw error;
           if (data.length) {
             // compras y cofres: siempre manda el servidor

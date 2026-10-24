@@ -151,7 +151,7 @@ function fFinish(f0, status = "finished", endAt) {
   return x;
 }
 function putFocus(rows, ms = 600) {
-  for (const r of rows) state.focus.set(r.id, r);
+  for (const r of rows) { state.focus.set(r.id, r); if (fEnded(r)) fWatch.delete(r.id); }   // la terminó este dispositivo: no es "desde otro dispositivo"
   Store.put("focus", rows).then(() => Sync.changed(ms)).catch(() => toast("No se pudo guardar en este dispositivo."));
 }
 

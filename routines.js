@@ -83,8 +83,10 @@ function routineRows(routines, plans, { today, at, isDone = () => false, hasFocu
 }
 
 /** Datos de una rutina que salen del formulario (o de otra rutina, al duplicar) */
-const RT_DATA = ["title", "description", "category", "weekdays", "start_date", "end_date", "time", "planned_minutes", "intensity", "note", "reminder_minutes"];
-const rtData = (r) => Object.fromEntries(RT_DATA.map((k) => [k, k === "weekdays" ? [...r.weekdays] : r[k] ?? (k === "description" || k === "note" ? "" : null)]));
+// Versión 8: prioridad, energía y duración flexible (solo las usa el Plan del Día; el generador no las copia a las misiones)
+const RT_DATA = ["title", "description", "category", "weekdays", "start_date", "end_date", "time", "planned_minutes", "intensity", "note", "reminder_minutes", "priority", "energy_required", "duration_mode", "minimum_minutes"];
+const RT_DEF = { description: "", note: "", priority: "normal", energy_required: "normal", duration_mode: "fixed" };
+const rtData = (r) => Object.fromEntries(RT_DATA.map((k) => [k, k === "weekdays" ? [...r.weekdays] : r[k] ?? RT_DEF[k] ?? null]));
 /** Rutina nueva: id nuevo y familia nueva (series_id = id) */
 function rtCreate(fields, { id, at }) {
   return { ...rtData(fields), id, series_id: id, active: true, created_at: at, updated_at: at, deleted_at: null };
@@ -223,7 +225,9 @@ function openRoutineEditor({ mode = "new", seg = null, from = null } = {}) {
   const end = lastEnd && lastEnd >= start ? lastEnd : null;
   dlg = { type: "rtForm", mode, segId: seg ? seg.id : null, from, err: "", f: { title: base.title, cat: base.category, days: [...base.weekdays], time: base.time || "", min: base.planned_minutes, diff: base.intensity,
     rem: rem === null ? "" : String(rem), remCustom: rem !== null && !Notify.REM.some(([v]) => v === String(rem)), start, endOn: !!end, end: end || "", desc: base.description || "", note: base.note || "",
-    more: !!(end || base.description || base.note || start > T) } };
+    more: !!(end || base.description || base.note || start > T),
+    prio: base.priority ?? null, energy: base.energy_required ?? null, mode: base.duration_mode ?? null, minm: base.minimum_minutes ?? "",
+    dpOpen: !!((base.priority && base.priority !== "normal") || (base.energy_required && base.energy_required !== "normal") || base.duration_mode === "flexible") } };
   renderModal(); setTimeout(() => document.getElementById("rtTitle")?.focus(), 30);
 }
 function readRoutineForm() {
@@ -235,6 +239,7 @@ function readRoutineForm() {
   if (g("rtEnd")) f.end = g("rtEnd").value;
   if (g("rtDesc")) f.desc = g("rtDesc").value;
   if (g("rtNote")) f.note = g("rtNote").value;
+  if (g("rtMinM")) f.minm = g("rtMinM").value;
 }
 function routineForm() {
   const f = dlg.f, T = todayKey(), seg = dlg.segId ? state.routines.get(dlg.segId) : null;
@@ -260,6 +265,7 @@ function routineForm() {
     ${f.endOn ? `<input class="inp" id="rtEnd" type="date" min="${f.start > T ? f.start : T}" value="${esc(f.end)}" aria-label="Fecha de fin">` : ""}</div></div>
     <div class="field"><label for="rtDesc">Descripción (opcional)</label><input class="inp" id="rtDesc" maxlength="160" placeholder="Solo se ve en Rutinas" value="${esc(f.desc)}"></div>
     <div class="field"><label for="rtNote">Nota (opcional)</label><input class="inp" id="rtNote" maxlength="120" placeholder="Se copia a cada día" value="${esc(f.note)}"></div></div>` : ""}
+  ${dpFormFields(f, null, { prefix: "rt", due: false })}
   ${dlg.err ? `<div class="err">${dlg.err}</div>` : ""}
   <div class="modal-f"><button type="button" class="btn ghost" data-dlg-close>Cancelar</button><button type="submit" class="btn primary">Guardar rutina</button></div></form>`;
 }
@@ -273,13 +279,14 @@ function saveRoutine() {
   if (f.time && !/^\d{2}:\d{2}$/.test(f.time)) return fail("La hora no es válida.");
   const rem = f.rem === "" || f.rem === null ? null : Math.round(+f.rem);
   if (f.time && rem !== null && !(rem >= (f.remCustom ? 1 : 0) && rem <= 1440)) return fail("El recordatorio va de 1 a 1440 minutos antes.");
+  const dp = dpFormRead(f, min, { due: false, routine: true }); if (dp.err) return fail(dp.err);
   const startLocked = dlg.mode === "split" || (dlg.mode === "edit" && seg && seg.start_date < T);
   const start = startLocked ? (dlg.mode === "split" ? dlg.from : seg.start_date) : f.start;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start || "") || isNaN(fromKey(start))) return fail("Elige la fecha de inicio.");
   if (!startLocked && start < T && !(seg && start === seg.start_date)) return fail("La rutina puede empezar hoy o más adelante.");
   if (f.endOn && (!/^\d{4}-\d{2}-\d{2}$/.test(f.end || "") || f.end < start || f.end < T)) return fail("La fecha de fin tiene que ser desde el inicio y no antes de hoy.");
   const fields = { title: title.slice(0, 80), description: f.desc.trim().slice(0, 160), category: f.cat, weekdays: [...f.days].sort((a, b) => a - b), start_date: start, end_date: f.endOn ? f.end : null,
-    time: f.time || null, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120), reminder_minutes: f.time ? rem : null };
+    time: f.time || null, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120), reminder_minutes: f.time ? rem : null, ...dp.cols };
   const at = nowISO(), mode = dlg.mode;
   dlg = null; renderModal();
   if (mode === "edit" && seg) putRoutines([{ ...seg, ...fields, updated_at: at }]);
@@ -376,7 +383,7 @@ function parseRoutines(j) {
     out.push({ id: r.id.toLowerCase(), series_id: (r.series_id || r.id).toLowerCase(), title: r.title.trim().slice(0, 80), description: typeof r.description === "string" ? r.description.trim().slice(0, 160) : "",
       category: r.category, weekdays: wd.sort((a, b) => a - b), start_date: r.start_date, end_date: r.end_date || null, time, planned_minutes: min, intensity: diff,
       note: typeof r.note === "string" ? r.note.trim().slice(0, 120) : "", reminder_minutes: time && Number.isInteger(r.reminder_minutes) && r.reminder_minutes >= 0 && r.reminder_minutes <= 1440 ? r.reminder_minutes : null,
-      active: r.active !== false, created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
+      active: r.active !== false, ...dpColsOf(r, false), created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });   // respaldo versión 8
   }
   return { routines: out, skipped };
 }
@@ -411,6 +418,7 @@ document.addEventListener("click", (e) => {
   if (D.rtdelgo && dlg && dlg.type === "rtDelete") { deleteRoutine(D.rtdelgo === "yes"); return; }
   if (D.rtscope && dlg && dlg.type === "rtScope") { chooseScope(D.rtscope); return; }
   if (dlg && dlg.type === "rtForm") {
+    if (dpFormClick(D, readRoutineForm)) return;
     if (D.rtcat) { readRoutineForm(); dlg.f.cat = D.rtcat; renderModal(); return; }
     if (D.rtdiff) { readRoutineForm(); dlg.f.diff = +D.rtdiff; renderModal(); return; }
     if (D.rtday) { readRoutineForm(); const d = +D.rtday, s = new Set(dlg.f.days); s.has(d) ? s.delete(d) : s.add(d); dlg.f.days = [...s].sort((a, b) => a - b); renderModal(); document.querySelector(`[data-rtday="${d}"]`)?.focus(); return; }
