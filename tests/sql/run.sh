@@ -15,7 +15,7 @@ for i in $(seq 1 60); do
 done
 
 echo "== Migraciones"
-for f in supabase/schema.sql supabase/002_*.sql supabase/003_*.sql supabase/004_*.sql supabase/005_*.sql supabase/006_*.sql; do
+for f in supabase/schema.sql supabase/002_*.sql supabase/003_*.sql supabase/004_*.sql supabase/005_*.sql supabase/006_*.sql supabase/007_*.sql; do
   echo "   $f"
   psql_run -f "$f" > /dev/null
 done

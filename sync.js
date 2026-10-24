@@ -20,6 +20,7 @@ const Sync = (() => {
     ["bosses", "monthly_bosses", "user_id,id", "boss:"],
     ["plans", "planned_activities", "user_id,id", "plan:"],   // versión 5
     ["focus", "focus_sessions", "user_id,id", "focus:"],      // versión 5
+    ["routines", "recurring_plans", "user_id,id", "routine:"],// versión 7
   ];
   // Tablas nuevas que se bajan: local, Supabase, columnas, orden secundario
   const PULL = [
@@ -29,18 +30,25 @@ const Sync = (() => {
     ["purchases", "purchases", "id,item_id,item_type,item_name,item_icon,item_rarity,price,status,reason,purchased_at,updated_at,synced_at", "id"],
     ["chests", "level_chests", "level,name,gold,claimed_at,updated_at,synced_at", "level"],
     ["bosses", "monthly_bosses", "id,year,month,name,description,boss_type,category,target_hp,manual_progress,coin_reward,title_reward,theme,claimed_at,created_at,updated_at,deleted_at,synced_at", "id"],
-    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,reminder_minutes,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["plans", "planned_activities", "id,date,time,title,category,planned_minutes,intensity,note,status,moved_from,reminder_minutes,recurring_plan_id,recurrence_date,recurrence_edited,created_at,updated_at,deleted_at,synced_at", "id"],
     ["focus", "focus_sessions", "id,planned_activity_id,device_id,title,category,mode,status,started_at,segment_started_at,segments,focus_seconds,pomodoro,ended_at,created_at,updated_at,deleted_at,synced_at", "id"],
+    ["routines", "recurring_plans", "id,series_id,title,description,category,weekdays,start_date,end_date,time,planned_minutes,intensity,note,reminder_minutes,active,created_at,updated_at,deleted_at,synced_at", "id"],   // versión 7
   ];
 
   // Tablas de la versión 5: si todavía no se ejecutó 004 en Supabase, se saltean sin frenar el resto
-  const OPTIONAL = new Set(["planned_activities", "focus_sessions"]);
+  const OPTIONAL = new Set(["planned_activities", "focus_sessions", "recurring_plans"]);   // recurring_plans: versión 7 (007)
   const missing = (e) => e && (e.code === "PGRST205" || e.code === "42P01" || /could not find the table|does not exist/i.test(String(e.message || "")));
   // Columna de la versión 6 (planned_activities.reminder_minutes): si todavía no se ejecutó 005, se sube y se baja sin ella
   const noColumn = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /reminder_minutes/.test(String(e.message || ""));
   let noRem = false;
+  // Columnas de la versión 7 (rutinas). Si todavía no se ejecutó 007, las planificaciones manuales se suben sin ellas y las
+  // misiones de rutina esperan en la cola (sin esas columnas el otro dispositivo las vería como planificaciones sueltas).
+  // Se vuelve a probar en cada sincronización, así que se arregla sola cuando 007 existe.
+  const REC = ["recurring_plan_id", "recurrence_date", "recurrence_edited"];
+  const noRecCol = (e) => e && (e.code === "PGRST204" || e.code === "42703") && /recurring_plan_id|recurrence_date|recurrence_edited/.test(String(e.message || ""));
+  const stripRec = (r) => { const x = { ...r }; for (const k of REC) delete x[k]; return x; };
 
-  let sb = null, session = null, linked = null;
+  let sb = null, session = null, linked = null, channel2 = null;
   let status = "local"; // local | confirm | syncing | synced | offline | error
   let busy = false, again = false, debounce = null, retryTimer = null, retryN = 0;
   let offset = 0, pendingN = 0, lastSync = null, channel = null, uploadCount = 0;
@@ -80,7 +88,8 @@ const Sync = (() => {
       const n = (await Store.allRows()).filter((r) => !r.deleted_at).length
         + (await Store.all("items")).filter((r) => !r.deleted_at).length + (await Store.all("goals")).filter((r) => !r.deleted_at).length
         + (await Store.all("bosses")).filter((r) => !r.deleted_at).length
-        + (await Store.all("plans")).filter((r) => !r.deleted_at).length + (await Store.all("focus")).filter((r) => !r.deleted_at).length;
+        + (await Store.all("plans")).filter((r) => !r.deleted_at).length + (await Store.all("focus")).filter((r) => !r.deleted_at).length
+        + (await Store.all("routines")).filter((r) => !r.deleted_at).length;
       if (n > 0) { uploadCount = n; status = "confirm"; emit(); return; }
       await Store.setMeta("account", id); linked = id;
     }
@@ -102,9 +111,16 @@ const Sync = (() => {
         .on("postgres_changes", { event: "*", schema: "public", table: "planned_activities", filter: `user_id=eq.${uid()}` }, () => changed(800))
         .on("postgres_changes", { event: "*", schema: "public", table: "focus_sessions", filter: `user_id=eq.${uid()}` }, () => changed(500))
         .subscribe();
+      // Rutinas (versión 7) en un canal aparte: si 007 todavía no existe, no frena los avisos del resto
+      channel2 = sb.channel("life-rpg-rt-" + uid())
+        .on("postgres_changes", { event: "*", schema: "public", table: "recurring_plans", filter: `user_id=eq.${uid()}` }, () => changed(800))
+        .subscribe();
     } catch (e) { channel = null; }
   }
-  function stopRealtime() { if (channel && sb) { try { sb.removeChannel(channel); } catch (e) {} } channel = null; }
+  function stopRealtime() {
+    for (const c of [channel, channel2]) if (c && sb) { try { sb.removeChannel(c); } catch (e) {} }
+    channel = null; channel2 = null;
+  }
 
   function scheduleRetry() {
     clearTimeout(retryTimer);
@@ -178,16 +194,24 @@ const Sync = (() => {
           if (t === "coins") rows = rows.filter((r) => Store.DERIVED.includes(r.source)); // el resto lo escribe el servidor
           if (t === "bosses") rows = rows.map(({ claimed_at, ...r }) => r);                // claimed_at solo lo escribe claim_boss
           if (t === "plans" && noRem) rows = rows.map(({ reminder_minutes, ...r }) => r);
+          let done = part;
           if (rows.length) {
             let { error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false });
             if (error && t === "plans" && noColumn(error)) {
               noRem = true; await Store.setMeta("noRemCol", true);
-              ({ error } = await sb.from(table).upsert(rows.map(({ reminder_minutes, ...r }) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+              rows = rows.map(({ reminder_minutes, ...r }) => r);
+              ({ error } = await sb.from(table).upsert(rows.map((r) => ({ ...r, user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+            }
+            if (error && t === "plans" && noRecCol(error)) {           // servidor sin 007: suben solo las manuales
+              const manual = rows.filter((r) => !r.recurring_plan_id), ids = new Set(manual.map((r) => P + r.id));
+              error = null;
+              if (manual.length) ({ error } = await sb.from(table).upsert(manual.map((r) => ({ ...stripRec(r), user_id: uid() })), { onConflict: conflict, defaultToNull: false }));
+              done = part.filter((p) => ids.has(p.id) || !rows.some((r) => P + r.id === p.id));
             }
             if (error && OPTIONAL.has(table) && missing(error)) break;    // quedan pendientes hasta que exista la tabla
             if (error) throw error;
           }
-          await Store.clearPending(part);
+          await Store.clearPending(done);
         }
       }
 
@@ -228,7 +252,8 @@ const Sync = (() => {
           const { data, error } = await sb.from(table).select(cols).gt("synced_at", sinceT)
             .order("synced_at", { ascending: true }).order(second, { ascending: true }).range(off, off + PAGE - 1);
           if (error && OPTIONAL.has(table) && missing(error)) { max = cur; break; }
-          if (error && t === "plans" && noColumn(error) && !noRem) { noRem = true; await Store.setMeta("noRemCol", true); cols = cols0.replace("reminder_minutes,", ""); continue; }
+          if (error && t === "plans" && noColumn(error) && !noRem) { noRem = true; await Store.setMeta("noRemCol", true); cols = cols.replace("reminder_minutes,", ""); continue; }
+          if (error && t === "plans" && noRecCol(error) && cols.includes("recurring_plan_id")) { cols = cols.replace("recurring_plan_id,recurrence_date,recurrence_edited,", ""); continue; }
           if (error) throw error;
           if (data.length) {
             // compras y cofres: siempre manda el servidor

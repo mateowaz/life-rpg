@@ -15,7 +15,7 @@ function makeDemo(){
 /* ============ Estado y guardado ============ */
 const state={days:{},rows:new Map(),profile:{name:"",motto:"",avatar_initials:"",avatar_icon:"initials",avatar_frame:"simple",avatar_bg:"violet",avatar_badge:"none",equipped_title:"",featured_badges:[],updated_at:null},demo:false,ready:false,mode:"local",route:"dashboard",histMonth:null,histSel:null,todayView:null,confirmDel:null,
   eco:{coins:new Map(),items:new Map(),purchases:new Map(),goals:new Map(),chests:new Map(),bosses:new Map(),ops:[]},shopTab:"rewards",goalMonth:null,confirmItem:null,confirmGoal:null,bossTab:"current",confirmBoss:null,bossSeen:null,
-  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week",lastExport:null,exportSnooze:null};
+  plans:new Map(),focus:new Map(),device:null,pomo:null,wakeOn:false,planTab:null,planMonth:null,planSel:null,planMenu:null,confirmPlan:null,oldOpen:false,agendaDays:14,statsRange:"week",lastExport:null,exportSnooze:null,routines:new Map(),rtMenu:null,mOpen:null};
 // Fila guardada (mismos campos que Supabase) → actividad que usan las vistas y game.js
 function rowToAct(r){return {id:r.id,cat:r.category,title:r.title,min:r.minutes,diff:r.intensity,xp:actXP(r.minutes,r.intensity,r.category),note:r.note||"",ts:Date.parse(r.created_at)||0}}
 function rebuildDays(){
@@ -39,8 +39,10 @@ const App=window.App={
       state.plans=new Map(plans.map(r=>[r.id,r])); state.focus=new Map(focus.map(r=>[r.id,r]));
       if(!state.device){state.device=(await Store.getMeta("device"))||"este-dispositivo";state.pomo=(await Store.getMeta("pomo"))||null;state.wakeOn=!!(await Store.getMeta("wakeOn"))}
     }catch(e){}
+    try{const routines=await Store.all("routines");state.routines=new Map(routines.map(r=>[r.id,r]))}catch(e){} // Rutinas (versión 7)
     try{state.lastExport=(await Store.getMeta("lastExport"))||null;state.exportSnooze=(await Store.getMeta("exportSnooze"))||null}catch(e){}
     rebuildDays(); syncEconomy(false); render();
+    ensureRoutines(); // crea las misiones de las rutinas que falten (solo escribe si algo cambió)
   }
 };
 async function boot(){
@@ -275,7 +277,7 @@ function vPerfil(s){
   ${accountPanel()}
   ${Notify.panel()}
   <section class="panel"><div class="panel-h"><h2>Datos y respaldo</h2></div><p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">${state.mode==="device"?"Tu progreso se guarda en este dispositivo y funciona sin internet.":"Este navegador no permite guardar datos (¿modo incógnito?). Lo que registres se perderá al cerrar."} Exporta una copia de seguridad cada tanto, aunque tengas la sincronización activa.</p>${exportLine()}
-  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
+  <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" id="expBtn" ${Object.keys(state.days).length||state.eco.items.size||state.eco.goals.size||state.eco.bosses.size||state.plans.size||state.focus.size||state.routines.size?"":"disabled"}>Exportar datos</button><button class="btn sm" id="impBtn">Importar datos</button><input type="file" id="impFile" accept=".json,application/json" hidden>${installBtn()}</div>${installHint()}
   ${backupPanel()}
   <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px">${state.confirmReset?`<div class="confirm" style="flex-wrap:wrap">Se borrarán todas tus actividades${Sync.info.signedIn?" en todos tus dispositivos":""}. ¿Seguro? <button class="btn sm danger" id="resetYes">Sí, borrar todo</button><button class="btn sm ghost" id="resetNo">Cancelar</button></div>`:`<button class="btn sm danger" id="resetAsk" ${Object.keys(state.days).length?"":"disabled"}>Borrar todo el progreso</button>`}</div></section>
   </div></div>`;
@@ -361,7 +363,7 @@ function backupPanel(){
   const P=bk.pending;
   if(P){
     const cur=Object.keys(state.days).length;
-    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}${P.bosses.length?` · ${P.bosses.length} Bosses`:""}${P.plans.length?` · ${P.plans.length} planificaciones`:""}${P.focus.length?` · ${P.focus.length} sesiones de enfoque`:""}</span></div>
+    h+=`<div class="goal" style="margin-top:14px"><div class="goal-h"><span>Archivo a importar</span><span class="num">${P.dayCount} días · ${P.actCount} actividades${P.items.length?` · ${P.items.length} en la tienda`:""}${P.goals.length?` · ${P.goals.length} objetivos`:""}${P.bosses.length?` · ${P.bosses.length} Bosses`:""}${P.plans.length?` · ${P.plans.length} planificaciones`:""}${P.focus.length?` · ${P.focus.length} sesiones de enfoque`:""}${P.routines.length?` · ${P.routines.length} rutinas`:""}</span></div>
     <b>${P.first?`Del ${fmtLong(P.first)} al ${fmtLong(P.last)}`:"Sin actividades"}</b>
     <span style="font-size:13px;color:var(--muted)">${P.profile.name?`Personaje: ${esc(P.profile.name)}. `:""}${P.skipped?`Se omitirán ${P.skipped} registros inválidos. `:""}${cur?`Ahora tienes ${cur} días guardados. <b style="color:var(--fg)">Combinar</b> suma lo del archivo sin borrar nada. <b style="color:var(--fg)">Reemplazar</b> deja solo lo del archivo.`:"No tienes datos guardados, así que se cargará todo el archivo."}</span>
     ${bk.replaceAsk?`<div class="confirm" style="flex-wrap:wrap;margin-top:4px">Se borrarán tus ${cur} días actuales y quedará solo el archivo. ¿Seguro? <button class="btn sm danger" id="impReplaceYes">Sí, reemplazar</button><button class="btn sm ghost" id="impReplaceNo">Volver</button></div>`
@@ -375,7 +377,7 @@ function exportJSON(){
   const days={}; for(const k in state.days) days[k]={activities:state.days[k].activities.map(a=>({id:a.id,cat:a.cat,title:a.title,min:a.min,diff:a.diff,note:a.note,ts:a.ts}))};
   const P=state.profile, profile={name:P.name||"",motto:P.motto||"",updated_at:P.updated_at};
   for(const k of [...AV_KEYS,"equipped_title","featured_badges"]) profile[k]=P[k];
-  return JSON.stringify({app:"life-rpg",version:6,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport(),...prefsExport()},null,2);
+  return JSON.stringify({app:"life-rpg",version:7,exportedAt:new Date().toISOString(),profile,activities:rows,days,...ecoExport(),monthly_bosses:bossExport(),...planExport(),...routineExport(),...prefsExport()},null,2);
 }
 /** Versión 6: preferencias de notificaciones. Sin dispositivos, suscripciones, claves ni historial de avisos. */
 function prefsExport(){const p=Notify.exportPrefs();return p?{notification_preferences:p}:{}}
@@ -457,9 +459,9 @@ function parseBackup(text){
     }
   }
   const live=rows.filter(r=>!r.deleted_at), ks=[...new Set(live.map(r=>r.date))].sort();
-  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j);
-  skipped+=eco.skipped+bs.skipped+pl.skipped;
-  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,nprefs:Notify.parsePrefs(j.notification_preferences),skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
+  const pr=j.profile&&typeof j.profile==="object"?j.profile:{}, eco=parseEco(j), bs=parseBosses(j), pl=parsePlans(j), rt=parseRoutines(j);
+  skipped+=eco.skipped+bs.skipped+pl.skipped+rt.skipped;
+  return {rows,...eco,bosses:bs.bosses,plans:pl.plans,focus:pl.focus,routines:rt.routines,nprefs:Notify.parsePrefs(j.notification_preferences),skipped,dayCount:ks.length,actCount:live.length,first:ks[0],last:ks[ks.length-1],profile:{name:typeof pr.name==="string"?pr.name.slice(0,40):"",motto:typeof pr.motto==="string"?pr.motto.slice(0,80):"",updated_at:pr.updated_at||null,...profileFromFile(pr)}};
 }
 /* Respaldo versión 3: tienda, objetivos, compras y cofres. Las versiones 1 y 2 no los traen. */
 const UUIDre=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -553,13 +555,15 @@ function applyImport(mode){
   }
   if(profChanged) saveProfile();
   const bossRes=importBosses(P,mode,at);
+  const rtRes=importRoutines(P,mode,at);
   const planRes=importPlans(P,mode,at);
+  ensureRoutines();
   const eco=importEco(P,mode,at);
   Notify.importPrefs(P.nprefs,mode).catch(()=>{});
   bk.pending=null; bk.replaceAsk=false; bk.err="";
   const after=compute();
   toast(`Importación lista: <b>${after.activeDays} días</b> · nivel ${after.G.level}`);
-  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`,planRes.plans&&`${planRes.plans} planificaciones`,planRes.focus&&`${planRes.focus} sesiones de enfoque`].filter(Boolean);
+  const ex=[eco.items&&`${eco.items} de la tienda`,eco.goals&&`${eco.goals} objetivos`,eco.claims&&`${eco.claims} reclamos`,eco.chests&&`${eco.chests} cofres`,eco.buys&&`${eco.buys} compras`,bossRes.bosses&&`${bossRes.bosses} Bosses`,bossRes.claims&&`${bossRes.claims} reclamos de Boss`,planRes.plans&&`${planRes.plans} planificaciones`,planRes.focus&&`${planRes.focus} sesiones de enfoque`,rtRes&&`${rtRes} rutina${rtRes===1?"":"s"}`].filter(Boolean);
   if(ex.length) toast(`También se importaron ${ex.join(", ")}.`);
   if(eco.skippedBuys) toast(`${eco.skippedBuys} compra${eco.skippedBuys===1?"":"s"} del archivo no se repitió: la recompensa ya no está activa o no alcanza el Oro.`,"lvl");
   for(const id in after.unlocked) if(!before.unlocked[id]) {toast(`Logros actualizados según tu historial.`);break}
@@ -570,7 +574,7 @@ document.addEventListener("change",e=>{
   const f=e.target.files[0]; e.target.value="";
   if(f.size>20*1024*1024){bk.err="El archivo es demasiado grande para ser un respaldo.";render();return}
   const r=new FileReader();
-  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length&&!P.bosses.length&&!P.plans.length&&!P.focus.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
+  r.onload=()=>{try{const P=parseBackup(String(r.result));if(!P.actCount&&!P.items.length&&!P.goals.length&&!P.bosses.length&&!P.plans.length&&!P.focus.length&&!P.routines.length) throw "El archivo no tiene datos para importar.";bk.pending=P;bk.err="";bk.replaceAsk=false}catch(err){bk.pending=null;bk.err=typeof err==="string"?err:"No se pudo leer el archivo."}render()};
   r.onerror=()=>{bk.err="No se pudo leer el archivo.";render()};
   r.readAsText(f);
 });
@@ -711,4 +715,4 @@ navInit();
 render(); boot();
 addEventListener("online",render); addEventListener("offline",render);
 // cambia de día a medianoche sin recargar
-let lastDay=todayKey(); setInterval(()=>{if(todayKey()!==lastDay){lastDay=todayKey();render()}},60000);
+let lastDay=todayKey(); setInterval(()=>{if(todayKey()!==lastDay){lastDay=todayKey();render();ensureRoutines()}},60000);

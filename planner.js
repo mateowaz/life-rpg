@@ -19,10 +19,11 @@ function planState(p) {
 const isOpenPlan = (st) => st === "planned" || st === "today" || st === "overdue";
 const byTime = (a, b) => a.date.localeCompare(b.date) || (a.time || "99").localeCompare(b.time || "99") || a.created_at.localeCompare(b.created_at);
 const plansOn = (k) => livePlans().filter((p) => p.date === k).sort(byTime);
-/** Atrasadas: las de los últimos 7 días arriba; las más viejas, aparte */
+/** Atrasadas: las de los últimos 7 días arriba; las más viejas, aparte.
+    Una misión de rutina deja de verse aquí cuando llega la siguiente misión de esa rutina (sigue en el Historial). */
 function overdueLists() {
-  const T = todayKey(), lim = addDays(T, -OVERDUE_DAYS);
-  const all = livePlans().filter((p) => planState(p) === "overdue").sort((a, b) => b.date.localeCompare(a.date) || byTime(a, b));
+  const T = todayKey(), lim = addDays(T, -OVERDUE_DAYS), live = livePlans(), gone = rtSupersededFn(live, state.routines, T);
+  const all = live.filter((p) => planState(p) === "overdue" && !gone(p)).sort((a, b) => b.date.localeCompare(a.date) || byTime(a, b));
   return { recent: all.filter((p) => p.date >= lim), older: all.filter((p) => p.date < lim) };
 }
 function dayName(k) {
@@ -54,7 +55,7 @@ function planRow(p, { compact = false } = {}) {
   const side = acts ? "" : moreBtn(p);
   const menu = state.planMenu === p.id && state.confirmPlan !== p.id ? `<div class="plan-menu">${planMenu(p, st)}</div>` : "";
   return `<div class="plan pst-${st}" data-pid="${p.id}"><div class="act c-${p.category}"><div class="cat-ico">${st === "done" ? ico("check") : ico(p.category)}</div>
-    <div style="min-width:0"><div class="act-t">${p.time ? `<span class="ptime num">${p.time}</span>` : ""}${esc(p.title)}</div>
+    <div style="min-width:0"><div class="act-t">${p.time ? `<span class="ptime num">${p.time}</span>` : ""}${rtIco(p)}${esc(p.title)}</div>
     <div class="act-m">${meta.join("")}</div>${st === "overdue" ? `<div class="p-late">⚠ ${lateText(p.date)}</div>` : ""}</div>
     <div class="act-r"><span class="pstate pst-${st}">${PLAN_LABEL[st]}</span>${side}</div></div>
     ${acts ? `<div class="plan-acts">${acts}</div>` : ""}${menu}</div>`;
@@ -87,9 +88,9 @@ function vPlanner(s) {
   const tab = state.planTab || (isNarrow() ? "agenda" : "calendar");
   const T = todayKey(), sel = state.planSel && state.planSel >= T ? state.planSel : T;
   return header("Planificador", "Lo que piensas hacer. Planificar no da XP: el progreso llega cuando completas la actividad.", false) + `
-  <div class="shop-top"><div class="tabs" role="tablist">${[["calendar", "Calendario"], ["agenda", "Agenda"], ["focus", "Enfoque"]].map(([id, l]) => `<button role="tab" aria-selected="${tab === id}" data-ptab="${id}">${l}</button>`).join("")}</div>
+  <div class="shop-top"><div class="tabs four" role="tablist">${[["calendar", "Calendario"], ["agenda", "Agenda"], ["rutinas", "Rutinas"], ["focus", "Enfoque"]].map(([id, l]) => `<button role="tab" aria-selected="${tab === id}" data-ptab="${id}">${l}</button>`).join("")}</div>
   <div class="plan-top-btns"><button class="btn" data-fnew>${ico("focus")} Enfoque</button><button class="btn primary" data-pnew="${tab === "calendar" ? sel : T}">${ico("plus")} Planificar</button></div></div>
-  ${tab === "agenda" ? planAgenda() : tab === "focus" ? vFocusTab() : planCalendar()}`;
+  ${tab === "agenda" ? planAgenda() : tab === "rutinas" ? vRoutinesTab() : tab === "focus" ? vFocusTab() : planCalendar()}`;
 }
 function planCalendar() {
   const T = todayKey(), m = state.planMonth || T.slice(0, 7), sel = state.planSel || T;
@@ -132,17 +133,30 @@ function planAgenda() {
 function planTodayPanel() {
   const T = todayKey(), list = plansOn(T), { recent, older } = overdueLists();
   const empty = !list.length && !recent.length && !older.length;
-  return `<section class="panel plan-today"><div class="panel-h"><h2>Planificado para hoy</h2><button class="link" data-go="planificador">Ver planificación</button></div>
+  return `<section class="panel plan-today"><div class="panel-h"><h2>Misiones de hoy</h2><button class="link" data-go="planificador">Ver planificación</button></div>
+    ${list.length ? `<div class="missions">${list.map(missionRow).join("")}</div>` : ""}
     ${recent.length ? `<div class="plans">${recent.map((p) => planRow(p, { compact: true })).join("")}</div>` : ""}
-    ${list.length ? `<div class="plans">${list.map((p) => planRow(p, { compact: true })).join("")}</div>` : ""}
     ${olderBlock(older)}
     ${empty ? `<div class="goal-h"><span>Nada planificado para hoy.</span><span><button class="link" data-pnew="${T}">+ Planificar</button></span></div>` : ""}</section>`;
+}
+/** Fila compacta de Misiones de hoy: el círculo abre Completar; al tocar la fila se despliegan las acciones */
+function missionRow(p) {
+  const st = planState(p), act = planAct(p), open = isOpenPlan(st), ex = state.mOpen === p.id;
+  const right = act ? `<span class="m-r good num">Real ${act.minutes} min</span>` : open ? `<span class="m-r"><em>${CAT[p.category].name}</em></span>` : `<span class="pstate pst-${st}">${PLAN_LABEL[st]}</span>`;
+  let acts = "";
+  if (ex && state.confirmPlan === p.id) acts = `<span class="confirm">¿Eliminar esta planificación? <button class="btn sm danger" data-pdel="${p.id}">Sí</button><button class="btn sm ghost" data-pnodel>No</button></span>`;
+  else if (ex && open) acts = `<button class="btn sm" data-pstart="${p.id}">${ico("play")} ${fActiveFor(p.id) ? "Ver enfoque" : "Iniciar enfoque"}</button><button class="btn sm" data-pmove="${p.id}">Reprogramar</button><button class="btn sm ghost" data-pskip="${p.id}">Omitir</button><button class="btn sm ghost" data-pedit="${p.id}">${ico("edit")} Editar</button><button class="btn sm ghost danger" data-paskdel="${p.id}" aria-label="Eliminar">${ico("trash")}</button>`;
+  else if (ex && (st === "skipped" || st === "cancelled")) acts = `<button class="btn sm" data-preplan="${p.id}">Volver a planificar</button>`;
+  return `<div class="mission c-${p.category} pst-${st}" data-pid="${p.id}"><div class="m-row">
+    <button class="m-check" data-pdone="${p.id}" ${open ? "" : "disabled"} aria-label="${act ? "Completada" : `Completar ${esc(p.title)}`}">${act ? ico("check") : ""}</button>
+    <button class="m-main" data-mtoggle="${p.id}" aria-expanded="${ex}"><span class="m-t">${rtIco(p)}${p.time ? `<span class="ptime num">${p.time}</span>` : ""}<b>${esc(p.title)}</b><span class="m-min num"> — ${p.planned_minutes} min</span></span>${right}</button></div>
+    ${acts ? `<div class="plan-acts m-acts">${acts}</div>` : ""}</div>`;
 }
 function dashPlans() {
   const T = todayKey(), late = overdueLists(), nLate = late.recent.length + late.older.length;
   const next = livePlans().filter((p) => p.date >= T && isOpenPlan(planState(p))).sort(byTime).slice(0, 3);
   return `<section class="panel next-panel"><div class="panel-h"><h2>Próximas misiones</h2>${nLate ? `<span class="pstate pst-overdue">${nLate} atrasada${nLate === 1 ? "" : "s"}</span>` : ""}</div>
-    ${next.length ? `<div class="nexts">${next.map((p) => `<div class="next c-${p.category}"><span class="next-w num">${p.date === T ? "Hoy" : p.date === addDays(T, 1) ? "Mañana" : cap(fmtWeek(p.date)).slice(0, 3) + " " + fromKey(p.date).getDate()}${p.time ? " · " + p.time : ""}</span><span class="next-t">${ico(p.category)}<b>${esc(p.title)}</b></span></div>`).join("")}</div>`
+    ${next.length ? `<div class="nexts">${next.map((p) => `<div class="next c-${p.category}"><span class="next-w num">${p.date === T ? "Hoy" : p.date === addDays(T, 1) ? "Mañana" : cap(fmtWeek(p.date)).slice(0, 3) + " " + fromKey(p.date).getDate()}${p.time ? " · " + p.time : ""}</span><span class="next-t">${ico(p.category)}<b>${esc(p.title)}</b>${rtIco(p)}</span></div>`).join("")}</div>`
       : `<div class="goal-h"><span>Nada planificado todavía.</span></div>`}
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-go="planificador">Ver planificación</button>${next.length ? "" : `<button class="btn sm ghost" data-pnew="${T}">${ico("plus")} Planificar</button>`}</div></section>`;
 }
@@ -168,12 +182,15 @@ function planStats() {
   const plans = livePlans().filter((p) => inR(p.date) && p.status !== "cancelled");
   const planned = plans.reduce((t, p) => t + p.planned_minutes, 0), done = plans.reduce((t, p) => t + (planAct(p)?.minutes || 0), 0);
   const hm = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}` : `${m} min`);
+  const rs = routineStats(from, to);
   return `<section class="panel"><div class="panel-h"><h2>Enfoque y planificación</h2><div class="tabs sm" role="tablist">${[["week", "Esta semana"], ["month", "Este mes"]].map(([id, l]) => `<button role="tab" aria-selected="${range === id}" data-srange="${id}">${l}</button>`).join("")}</div></div>
   <div class="kpis plan-kpis"><div class="kpi"><b class="num">${hm(Math.round(focusS / 60))}</b><span>Tiempo de enfoque</span></div><div class="kpi"><b class="num">${ses.length}</b><span>Sesiones de enfoque</span></div>
   <div class="kpi"><b class="num">${ses.length ? hm(Math.round(focusS / 60 / ses.length)) : "—"}</b><span>Promedio por sesión</span></div>
   <div class="kpi"><b class="num">${hm(planned)}</b><span>Planificado</span></div><div class="kpi"><b class="num">${hm(done)}</b><span>Realizado de lo planificado</span></div>
-  <div class="kpi"><b class="num">${planned ? Math.round(done / planned * 100) + " %" : "—"}</b><span>Cumplimiento</span></div></div>
-  <p class="muted-s" style="margin:12px 0 0">Solo información: no planificar o no cumplir nunca quita XP. Las canceladas no cuentan; las omitidas cuentan como planificadas.</p></section>`;
+  <div class="kpi"><b class="num">${planned ? Math.round(done / planned * 100) + " %" : "—"}</b><span>Cumplimiento</span></div>
+  <div class="kpi"><b class="num">${rs.active}</b><span>Rutinas activas</span></div>
+  <div class="kpi"><b class="num">${rs.total ? `${rs.done} de ${rs.total}` : "—"}</b><span>Misiones de rutina ${range === "week" ? "esta semana" : "este mes"}${rs.total ? ` · ${Math.round(rs.done / rs.total * 100)} %` : ""}</span></div></div>
+  <p class="muted-s" style="margin:12px 0 0">Solo información: no planificar o no cumplir nunca quita XP. Las canceladas no cuentan; las omitidas cuentan como planificadas. En las rutinas tampoco cuentan las quitadas u omitidas por una pausa.</p></section>`;
 }
 
 /* ============ Crear, editar, reprogramar, duplicar ============ */
@@ -224,7 +241,7 @@ function savePlan() {
   const at = nowISO(), old = dlg.id ? state.plans.get(dlg.id) : null;
   const row = { ...(old || { id: Store.newId(), status: "planned", moved_from: null, created_at: at, deleted_at: null }),
     date: f.date, time: f.time || null, title: title.slice(0, 80), category: f.cat, planned_minutes: min, intensity: +f.diff, note: f.note.trim().slice(0, 120),
-    reminder_minutes: f.time ? rem : null, updated_at: at };
+    reminder_minutes: f.time ? rem : null, updated_at: at, ...touched(old) };
   if (old && old.date !== f.date) row.moved_from = old.moved_from || old.date;
   dlg = null; renderModal();
   putPlans([row]);
@@ -249,21 +266,23 @@ function savePlanMove() {
   if (!p) { dlg = null; renderModal(); return; }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < todayKey()) { dlg.err = "Elige hoy o un día futuro."; dlg.date = d; dlg.time = t; renderModal(); return; }
   dlg = null; renderModal();
-  putPlans([{ ...p, date: d, time: t || null, status: "planned", moved_from: d !== p.date ? p.moved_from || p.date : p.moved_from, updated_at: nowISO() }]);
+  putPlans([{ ...p, date: d, time: t || null, status: "planned", moved_from: d !== p.date ? p.moved_from || p.date : p.moved_from, updated_at: nowISO(), ...touched(p) }]);
   toast(`Reprogramada para ${dayName(d).toLowerCase()}.`);
 }
 function setPlanStatus(id, status) {
   const p = state.plans.get(id); if (!p || planAct(p)) { render(); return; }
   state.planMenu = null;
-  putPlans([{ ...p, status, updated_at: nowISO() }]);
+  putPlans([{ ...p, status, updated_at: nowISO(), ...touched(p) }]);
   toast({ skipped: "Marcada como omitida. Tu racha y tu XP no cambian.", cancelled: "Planificación cancelada.", planned: "Vuelve a estar planificada." }[status]);
 }
 function deletePlan(id) {
   const p = state.plans.get(id); state.confirmPlan = null; state.planMenu = null;
   if (!p) return;
   if (fActiveFor(id)) { toast("Primero finaliza la sesión de enfoque de esta planificación."); render(); return; }
-  const at = nowISO(); putPlans([{ ...p, deleted_at: at, updated_at: at }]);
+  const at = nowISO(); putPlans([{ ...p, deleted_at: at, updated_at: at, ...touched(p) }]);
 }
+/** Una misión de rutina que tocaste (editar solo esta, reprogramar, omitir, cancelar, eliminar) queda como tuya: la rutina no la vuelve a cambiar */
+const touched = (p) => (p && p.recurring_plan_id ? { recurrence_edited: true } : {});
 function putPlans(rows) {
   for (const r of rows) state.plans.set(r.id, r);
   Store.put("plans", rows).then(() => Sync.changed()).catch(() => toast("No se pudo guardar en este dispositivo."));
@@ -324,6 +343,7 @@ function parsePlans(j) {
       planned_minutes: min, intensity: diff, note: typeof r.note === "string" ? r.note.trim().slice(0, 120) : "", status: ["planned", "skipped", "cancelled"].includes(r.status) ? r.status : "planned",
       moved_from: typeof r.moved_from === "string" && day.test(r.moved_from) ? r.moved_from : null,
       reminder_minutes: Number.isInteger(r.reminder_minutes) && r.reminder_minutes >= 0 && r.reminder_minutes <= 1440 ? r.reminder_minutes : null,   // respaldo versión 6
+      ...recOf(r),                                                                                                                                  // respaldo versión 7
       created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
   }
   for (const r of arr(j.focus_sessions)) {
@@ -338,6 +358,11 @@ function parsePlans(j) {
       focus_seconds: Math.round(segSecs(segs)), pomodoro: r.mode === "pomodoro" ? pomoClean(r.pomodoro) : null, ended_at: en === null ? null : new Date(en).toISOString(), created_at: c, updated_at: isoOr(r.updated_at, c), deleted_at: null });
   }
   return { plans, focus, skipped };
+}
+/** Respaldo versión 7: de qué rutina salió una planificación. Las dos primeras van juntas o no van. */
+function recOf(r) {
+  const ok = r && typeof r.recurring_plan_id === "string" && UUIDre.test(r.recurring_plan_id) && typeof r.recurrence_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.recurrence_date);
+  return ok ? { recurring_plan_id: r.recurring_plan_id.toLowerCase(), recurrence_date: r.recurrence_date, recurrence_edited: r.recurrence_edited === true } : { recurring_plan_id: null, recurrence_date: null, recurrence_edited: false };
 }
 /** Un respaldo nunca completa una planificación (eso lo hace su actividad, que tiene el mismo id) ni revive una sesión terminada. */
 function importPlans(P, mode, at) {
@@ -369,7 +394,7 @@ function planDlg(d) {
   if (d.type === "planForm") return planForm();
   if (d.type === "planMove") return planMoveForm();
   if (d.type === "planComplete") return planCompleteForm();
-  return "";
+  return routineDlg(d);
 }
 document.addEventListener("click", (e) => {
   const t = e.target.closest("button"); if (!t || !t.dataset) return;
@@ -379,7 +404,8 @@ document.addEventListener("click", (e) => {
   if (D.psel) { state.planSel = D.psel; state.planMenu = null; render(); return; }
   if (D.pmonth) { state.planMonth = D.pmonth; render(); return; }
   if (D.pmenu) { state.planMenu = state.planMenu === D.pmenu ? null : D.pmenu; state.confirmPlan = null; render(); return; }
-  if (D.pedit) { state.planMenu = null; openPlanEditor(null, D.pedit); return; }
+  if (D.pedit) { state.planMenu = null; openRoutineScope(D.pedit); return; }
+  if (D.mtoggle) { state.mOpen = state.mOpen === D.mtoggle ? null : D.mtoggle; state.confirmPlan = null; render(); return; }
   if (D.pdup) { state.planMenu = null; openPlanEditor(null, null, D.pdup); return; }
   if (D.pmove) { state.planMenu = null; openPlanMove(D.pmove); return; }
   if (D.pskip) { setPlanStatus(D.pskip, "skipped"); return; }

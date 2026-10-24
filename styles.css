@@ -825,3 +825,66 @@ select.inp:disabled,input.inp:disabled{opacity:.55}
   .ndev-b{width:100%;justify-content:flex-start;padding-left:21px}
   .notif-panel .btn.sm{flex:1 1 auto}
 }
+
+/* ============ Rutinas (versión 7) ============ */
+.rt-ico{display:inline-flex;vertical-align:-2px;margin-right:6px;color:var(--faint)}
+.rt-ico svg{width:13px;height:13px}
+.next-t .rt-ico{margin:0 0 0 2px}.next-t .rt-ico svg{width:12px;height:12px;color:var(--faint)}
+.rt-list{display:flex;flex-direction:column;gap:10px}
+.rt-card{padding:12px 14px;border-radius:12px;border:1px solid var(--line);border-left:3px solid var(--c,var(--violet));background:rgba(0,0,0,.18)}
+.rt-card.off{opacity:.55}
+.rt-top{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:start}
+.rt-top .cat-ico{width:34px;height:34px}
+.rt-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rt-desc{font-style:italic}
+.rt-acts{justify-content:flex-end;margin-top:6px;padding-left:0}
+.rt-card .plan-menu{margin-left:0;justify-content:flex-end}
+.rt-presets{display:flex;gap:6px;flex-wrap:wrap}
+.rt-presets .btn.on{border-color:rgba(155,123,255,.5);background:rgba(155,123,255,.16)}
+.rt-days{display:grid;grid-template-columns:repeat(7,minmax(0,44px));gap:6px;margin-top:8px}
+.rt-days button{height:44px;border-radius:999px;border:1px solid var(--line2);background:var(--bg2);color:var(--muted);font-weight:700;font-size:14px}
+.rt-days button[aria-pressed="true"]{color:var(--fg);border-color:var(--violet);background:rgba(155,123,255,.22)}
+.rt-more{align-self:flex-start}
+.rt-more-body{display:flex;flex-direction:column;gap:12px}
+.rt-more-body select+input{margin-top:6px}
+.field .rt-opt{text-transform:none;letter-spacing:normal;font-size:14px;color:var(--fg);font-weight:400}
+.rt-opt b{font-weight:600}
+.rt-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.18);cursor:pointer}
+.rt-opt+.rt-opt{margin-top:6px}
+.rt-opt input{margin-top:3px;accent-color:var(--violet)}
+.rt-opt span{display:flex;flex-direction:column;gap:2px}
+.rt-opt small{color:var(--muted);font-size:12.5px}
+.rt-opt:has(input:checked){border-color:rgba(155,123,255,.45)}
+.rt-scope{display:flex;flex-direction:column;gap:6px}
+.rt-scope .sheet-row{grid-template-columns:minmax(0,1fr) auto;border-color:var(--line)}
+.rt-scope .sr-t small{white-space:normal}
+.rt-del-btns{flex-wrap:wrap}
+/* Misiones de hoy: filas compactas */
+.missions{display:flex;flex-direction:column}
+.mission{border-top:1px solid var(--line)}
+.mission:first-child{border-top:0}
+.m-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px}
+.m-check{width:28px;height:28px;border-radius:999px;border:2px solid var(--c,var(--violet));background:transparent;display:grid;place-items:center;color:var(--good);flex:none}
+.m-check:not(:disabled):hover{background:color-mix(in srgb,var(--c,var(--violet)) 18%,transparent)}
+.m-check svg{width:16px;height:16px}
+.mission.pst-done .m-check{border-color:var(--good);background:rgba(111,211,168,.12)}
+.mission.pst-skipped .m-check,.mission.pst-cancelled .m-check{opacity:.4}
+.m-main{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:6px 0;background:none;border:0;color:var(--fg);text-align:left;font:inherit;cursor:pointer;min-width:0}
+.m-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-t b{font-weight:600}
+.m-min{color:var(--muted);font-size:13px}
+.m-r{font-size:12.5px;color:var(--muted);white-space:nowrap}
+.m-r em{font-style:normal;color:var(--c,var(--violet))}
+.m-r.good{color:var(--good)}
+.mission.pst-done .m-t b,.mission.pst-skipped .m-t b,.mission.pst-cancelled .m-t b{color:var(--muted)}
+.mission.pst-cancelled .m-t b{text-decoration:line-through}
+.m-acts{padding:0 0 10px 38px}
+.missions+.plans{margin-top:6px;border-top:1px dashed var(--line2);padding-top:6px}
+@media (max-width:820px){
+  .tabs.four{grid-template-columns:repeat(4,1fr)}
+  .tabs.four button{padding:8px 4px;font-size:13px}
+}
+@media (max-width:480px){
+  .m-acts{padding-left:0}
+  .rt-days{gap:4px}
+}
